@@ -70,7 +70,6 @@ class _PosScreenState extends State<PosScreen> {
   final TextEditingController _ctrlMontoRecibido = TextEditingController();
   final TextEditingController _ctrlDescuento = TextEditingController(text: '0');
 
-  // Solo Efectivo o QR como métodos principales
   String _metodoPagoSeleccionado = 'Efectivo';
   String _tipoPedido = 'Para Llevar';
   final String _numeroMesa = '1';
@@ -89,6 +88,13 @@ class _PosScreenState extends State<PosScreen> {
   Timer? _relojTimer;
   String _horaActual = '';
   String _fechaActual = '';
+
+  Map<String, String> _configNegocio = {
+    'nombre_negocio': 'AScafe',
+    'direccion_negocio': 'Riberalta, Beni - Bolivia',
+    'celular_negocio': '+591 70000000',
+    'logo_path': '',
+  };
 
   final Map<String, String> _emojisCategoriasCustom = {};
   final Map<int, String> _emojisProductosCustom = {};
@@ -166,6 +172,10 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _inicializarSistemaPOS() async {
+    final conf = await _dbService.obtenerConfiguracionNegocio();
+    setState(() {
+      _configNegocio = conf;
+    });
     await _verificarEstadoCajaSQLite();
     await _cargarDatosDesdeSQLite();
     await _calcularResumenVentasTurno();
@@ -230,7 +240,7 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   // ===========================================================================
-  // GENERADOR DE PDF NATIVO (80MM) E IMPRESIÓN EN WINDOWS
+  // GENERADOR DE RECIBO PDF (80MM) CON NOMBRE, DIRECCIÓN Y CELULAR PERSONALIZADOS
   // ===========================================================================
   String _limpiarTextoPdf(String input) {
     return input
@@ -253,11 +263,15 @@ class _PosScreenState extends State<PosScreen> {
 
   List<int> _construirBytesPdfRecibo(Map<String, dynamic> ticket) {
     final List items = ticket['items'] as List;
-    final List<String> lineas = [];
+    final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
+    final dirNeg = _configNegocio['direccion_negocio'] ?? '';
+    final celNeg = _configNegocio['celular_negocio'] ?? '';
 
+    final List<String> lineas = [];
     lineas.add('======================================');
-    lineas.add('       ASCAFE - PUNTO DE VENTA        ');
-    lineas.add('       Avrora Soft - Vibola LLC       ');
+    lineas.add('       ${_limpiarTextoPdf(nombreNeg).toUpperCase()}        ');
+    if (dirNeg.isNotEmpty) lineas.add('   ${_limpiarTextoPdf(dirNeg)}   ');
+    if (celNeg.isNotEmpty) lineas.add('   Celular: ${_limpiarTextoPdf(celNeg)}   ');
     lineas.add('======================================');
     lineas.add('RECIBO DE VENTA NRO: #${ticket['venta_id']}');
     lineas.add('FECHA Y HORA: ${ticket['fecha']}');
@@ -295,7 +309,7 @@ class _PosScreenState extends State<PosScreen> {
     lineas.add('======================================');
     lineas.add('     GRACIAS POR SU PREFERENCIA!      ');
 
-    final int altoPagina = 160 + (lineas.length * 14);
+    final int altoPagina = 180 + (lineas.length * 14);
     final StringBuffer contenidoStream = StringBuffer();
     contenidoStream.writeln('BT');
     contenidoStream.writeln('/F1 8.5 Tf');
@@ -345,11 +359,11 @@ class _PosScreenState extends State<PosScreen> {
       final archivoPdf = File(rutaPdf);
       await archivoPdf.writeAsBytes(bytesPdf, flush: true);
 
-      // Crear también archivo de texto plano de respaldo para impresora térmica directa
       final rutaTxt = p.join(dirTemp.path, 'recibo_termico_${ticket['venta_id']}.txt');
+      final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
       final StringBuffer sbTxt = StringBuffer();
       sbTxt.writeln('======================================');
-      sbTxt.writeln('       ASCAFE - PUNTO DE VENTA        ');
+      sbTxt.writeln('       ${nombreNeg.toUpperCase()}        ');
       sbTxt.writeln('======================================');
       sbTxt.writeln('RECIBO NRO: #${ticket['venta_id']}');
       sbTxt.writeln('FECHA Y HORA: ${ticket['fecha']}');
@@ -371,9 +385,7 @@ class _PosScreenState extends State<PosScreen> {
       await File(rutaTxt).writeAsString(sbTxt.toString(), flush: true);
 
       if (Platform.isWindows) {
-        // Abrir el PDF generado automáticamente en Windows para visualización / impresión PDF
         await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
-        // Enviar orden de impresión a la impresora predeterminada de Windows
         await Process.run('notepad.exe', ['/p', rutaTxt]);
       }
 
@@ -393,9 +405,6 @@ class _PosScreenState extends State<PosScreen> {
     }
   }
 
-  // ===========================================================================
-  // SINCRONIZACIÓN CON BASE DE DATOS SQLITE
-  // ===========================================================================
   Future<void> _verificarEstadoCajaSQLite() async {
     try {
       final db = await _dbService.database;
@@ -744,7 +753,6 @@ class _PosScreenState extends State<PosScreen> {
       await _cargarDatosDesdeSQLite();
       await _calcularResumenVentasTurno();
 
-      // Generar e imprimir automáticamente el PDF al cobrar
       await _generarEImprimirReciboPdf(ticketData);
 
       if (!mounted) return;
@@ -761,6 +769,7 @@ class _PosScreenState extends State<PosScreen> {
 
   void _mostrarDialogoTicketVenta(Map<String, dynamic> ticket) {
     final List items = ticket['items'] as List;
+    final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
 
     showDialog(
       context: context,
@@ -809,16 +818,16 @@ class _PosScreenState extends State<PosScreen> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Center(
+                  Center(
                     child: Text(
-                      '☕ ASCAFE - PUNTO DE VENTA 🥟',
-                      style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
+                      '☕ $nombreNeg 🥟',
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
                     ),
                   ),
-                  const Center(
+                  Center(
                     child: Text(
-                      'Avrora Soft - Vibola LLC',
-                      style: TextStyle(color: Colors.grey, fontSize: 11),
+                      _configNegocio['direccion_negocio'] ?? '',
+                      style: const TextStyle(color: Colors.grey, fontSize: 11),
                     ),
                   ),
                   const Divider(color: Colors.white24, height: 18),
@@ -1387,6 +1396,9 @@ class _PosScreenState extends State<PosScreen> {
       return coincideCategoria && coincideTexto && coincideStock;
     }).toList();
 
+    final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
+    final logoPath = _configNegocio['logo_path'] ?? '';
+
     return Scaffold(
       backgroundColor: const Color(0xFF0A0F1D),
       appBar: AppBar(
@@ -1394,10 +1406,19 @@ class _PosScreenState extends State<PosScreen> {
         elevation: 2,
         title: Row(
           children: [
-            const Text('☕ ', style: TextStyle(fontSize: 20)),
+            if (logoPath.isNotEmpty && File(logoPath).existsSync())
+              Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: Image.file(File(logoPath), width: 30, height: 30, fit: BoxFit.cover),
+                ),
+              )
+            else
+              const Text('☕ ', style: TextStyle(fontSize: 20)),
             Text(
-              '$_nombreCajaActiva | 👤 $_nombreCajeroActivo',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15, color: Colors.white),
+              '$nombreNeg | $_nombreCajaActiva | 👤 $_nombreCajeroActivo',
+              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
             ),
             const SizedBox(width: 12),
             Container(
@@ -1450,7 +1471,7 @@ class _PosScreenState extends State<PosScreen> {
                   context,
                   MaterialPageRoute(builder: (_) => const AdminInventarioScreen()),
                 );
-                await _cargarDatosDesdeSQLite();
+                await _inicializarSistemaPOS();
               },
             ),
           IconButton(
@@ -1885,7 +1906,6 @@ class _PosScreenState extends State<PosScreen> {
                           ),
                   ),
                   const Divider(color: Colors.white24, height: 14),
-                  // Selector estricto de Forma de Pago: Efectivo o QR
                   Row(
                     children: ['Efectivo', 'QR'].map((metodo) {
                       final sel = _metodoPagoSeleccionado == metodo;

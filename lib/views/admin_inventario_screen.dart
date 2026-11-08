@@ -1,6 +1,9 @@
 // Nombre del archivo: admin_inventario_screen.dart
 
+import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
 
 class AdminInventarioScreen extends StatefulWidget {
@@ -17,6 +20,14 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
   List<String> _categoriasDisponibles = ['General'];
   List _listaUsuarios = [];
   bool _cargando = false;
+
+  // Configuración del Negocio en Memoria
+  Map<String, String> _configNegocio = {
+    'nombre_negocio': 'AScafe',
+    'direccion_negocio': 'Riberalta, Beni - Bolivia',
+    'celular_negocio': '+591 70000000',
+    'logo_path': '',
+  };
 
   @override
   void initState() {
@@ -43,6 +54,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
       final cats = await _dbService.obtenerCategorias();
       final productosDB = await _dbService.obtenerProductos();
       final usuariosDB = await _dbService.obtenerUsuarios();
+      final configDB = await _dbService.obtenerConfiguracionNegocio();
 
       final List<String> catsLimpias = [];
       for (var c in cats) {
@@ -72,6 +84,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
           _categoriasDisponibles = catsLimpias;
           _listaProductos = tempLista;
           _listaUsuarios = usuariosDB;
+          _configNegocio = configDB;
           _cargando = false;
         });
       }
@@ -83,8 +96,296 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
   }
 
   // ===========================================================================
-  // GESTIÓN DE CAJEROS, CONTRASEÑAS Y NOMBRES DE CAJA
+  // DIÁLOGO DE CONFIGURACIÓN DEL NEGOCIO (NOMBRE, DIRECCIÓN, CELULAR, LOGO)
   // ===========================================================================
+  void _mostrarDialogoConfiguracionNegocio() {
+    final ctrlNombre = TextEditingController(text: _configNegocio['nombre_negocio']);
+    final ctrlDireccion = TextEditingController(text: _configNegocio['direccion_negocio']);
+    final ctrlCelular = TextEditingController(text: _configNegocio['celular_negocio']);
+    final ctrlLogoPath = TextEditingController(text: _configNegocio['logo_path']);
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (sbContext, setStateDialog) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0E1626),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
+              ),
+              title: const Text(
+                '🏢 Configurar Negocio (Nombre, Dirección, Celular y Logo)',
+                style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              content: SizedBox(
+                width: 440,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Estos datos se reflejarán automáticamente en la aplicación y en todos los recibos PDF impresos.',
+                        style: TextStyle(color: Colors.white70, fontSize: 12),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlNombre,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Nombre del Café / Snack (Ej: AScafe Riberalta)',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlDireccion,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Dirección del Establecimiento',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlCelular,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Número de Celular / Teléfono',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlLogoPath,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Ruta del Archivo de Logo (Ej: C:\\logo.png o URL)',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      if (ctrlLogoPath.text.trim().isNotEmpty && File(ctrlLogoPath.text.trim()).existsSync())
+                        Center(
+                          child: Container(
+                            height: 70,
+                            width: 70,
+                            margin: const EdgeInsets.only(top: 8),
+                            decoration: BoxDecoration(
+                              border: Border.all(color: Colors.white24),
+                              borderRadius: BorderRadius.circular(8),
+                              image: DecorationImage(
+                                image: FileImage(File(ctrlLogoPath.text.trim())),
+                                fit: BoxFit.cover,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFAB00),
+                    foregroundColor: Colors.black,
+                  ),
+                  icon: const Icon(Icons.save, size: 18),
+                  label: const Text('Guardar Configuración', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    final nuevoConfig = {
+                      'nombre_negocio': ctrlNombre.text.trim().isEmpty ? 'AScafe' : ctrlNombre.text.trim(),
+                      'direccion_negocio': ctrlDireccion.text.trim(),
+                      'celular_negocio': ctrlCelular.text.trim(),
+                      'logo_path': ctrlLogoPath.text.trim(),
+                    };
+
+                    final navigator = Navigator.of(dialogContext);
+                    final messenger = ScaffoldMessenger.of(context);
+
+                    await _dbService.guardarConfiguracionNegocio(nuevoConfig);
+                    await _cargarDatosDB();
+
+                    navigator.pop();
+                    messenger.showSnackBar(
+                      const SnackBar(
+                        backgroundColor: Colors.green,
+                        content: Text('✅ Datos del negocio y logotipo guardados correctamente.'),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
+  // ===========================================================================
+  // GENERADOR DE INFORME DE CAJA Y VENTAS EN PDF (AMPLIO Y SIN REORTES)
+  // ===========================================================================
+  String _limpiarTextoPdf(String input) {
+    return input
+        .replaceAll('á', 'a')
+        .replaceAll('é', 'e')
+        .replaceAll('í', 'i')
+        .replaceAll('ó', 'o')
+        .replaceAll('ú', 'u')
+        .replaceAll('Á', 'A')
+        .replaceAll('É', 'E')
+        .replaceAll('Í', 'I')
+        .replaceAll('Ó', 'O')
+        .replaceAll('Ú', 'U')
+        .replaceAll('ñ', 'n')
+        .replaceAll('Ñ', 'N')
+        .replaceAll('(', '[')
+        .replaceAll(')', ']')
+        .replaceAll('\\', '/');
+  }
+
+  Future<void> _generarInformeCajaPdf() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final db = await _dbService.database;
+      final List sesiones = await db.query('caja_sesiones', orderBy: 'id DESC', limit: 10);
+      final List ventas = await db.query('ventas', orderBy: 'id DESC', limit: 100);
+
+      double totalGlobal = 0.0;
+      double totalEfectivo = 0.0;
+      double totalQr = 0.0;
+
+      for (final v in ventas) {
+        final mapa = v as Map;
+        final m = (mapa['total'] as num?)?.toDouble() ?? 0.0;
+        final met = mapa['metodo_pago']?.toString() ?? 'Efectivo';
+        totalGlobal += m;
+        if (met.toUpperCase().contains('QR')) {
+          totalQr += m;
+        } else {
+          totalEfectivo += m;
+        }
+      }
+
+      final nombreNegocio = _configNegocio['nombre_negocio'] ?? 'AScafe';
+      final direccionNegocio = _configNegocio['direccion_negocio'] ?? '';
+      final celularNegocio = _configNegocio['celular_negocio'] ?? '';
+
+      final List<String> lineas = [];
+      lineas.add('==================================================');
+      lineas.add('        INFORME DE CAJA Y VENTAS DEL DIA          ');
+      lineas.add('     ${_limpiarTextoPdf(nombreNegocio)} - ${_limpiarTextoPdf(direccionNegocio)}');
+      lineas.add('     Celular: ${_limpiarTextoPdf(celularNegocio)}');
+      lineas.add('==================================================');
+      lineas.add('FECHA REPORTE: ${DateTime.now().toIso8601String().split('T').first}');
+      lineas.add('--------------------------------------------------');
+      lineas.add('RESUMEN FINANCIERO GENERAL:');
+      lineas.add(' - Total Ventas Acumuladas:  Bs. ${totalGlobal.toStringAsFixed(2)}');
+      lineas.add(' - Total Efectivo en Caja:   Bs. ${totalEfectivo.toStringAsFixed(2)}');
+      lineas.add(' - Total Pagos por QR:       Bs. ${totalQr.toStringAsFixed(2)}');
+      lineas.add(' - Total Transacciones:      ${ventas.length} ventas');
+      lineas.add('--------------------------------------------------');
+      lineas.add('ULTIMAS SESIONES Y ARQUEOS DE CAJA:');
+      for (final s in sesiones) {
+        final sm = s as Map;
+        final idCaja = sm['id'];
+        final cajaNom = _limpiarTextoPdf(sm['nombre_caja']?.toString() ?? 'Caja');
+        final cajero = _limpiarTextoPdf(sm['cajero_nombre']?.toString() ?? 'Admin');
+        final estado = sm['estado']?.toString() ?? 'Abierta';
+        final inicial = (sm['monto_inicial'] as num?)?.toDouble() ?? 0.0;
+        final finalM = (sm['monto_final'] as num?)?.toDouble() ?? 0.0;
+        lineas.add('Turno #$idCaja | Caja: $cajaNom | Cajero: $cajero');
+        lineas.add('Estado: $estado | Base: Bs.$inicial | Final Arqueo: Bs.$finalM');
+        lineas.add('--------------------------------------------------');
+      }
+      lineas.add('==================================================');
+      lineas.add('    DOCUMENTO OFICIAL DE CONTROL ADMINISTRATIVO   ');
+
+      // Ancho de página mayor (400 puntos) para que no se recorte ningún texto largo
+      final int altoPagina = 220 + (lineas.length * 15);
+      final StringBuffer contenidoStream = StringBuffer();
+      contenidoStream.writeln('BT');
+      contenidoStream.writeln('/F1 9 Tf');
+      int yPos = altoPagina - 25;
+      for (final l in lineas) {
+        contenidoStream.writeln('15 $yPos Td');
+        contenidoStream.writeln('($l) Tj');
+        contenidoStream.writeln('-15 -$yPos Td');
+        yPos -= 15;
+      }
+      contenidoStream.writeln('ET');
+
+      final String streamStr = contenidoStream.toString();
+      final List<String> objetos = [
+        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
+        '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
+        '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
+      ];
+
+      final StringBuffer pdfBuffer = StringBuffer();
+      pdfBuffer.write('%PDF-1.4\n');
+      final List<int> offsets = [];
+      for (final obj in objetos) {
+        offsets.add(pdfBuffer.toString().length);
+        pdfBuffer.write(obj);
+      }
+      final int xrefStart = pdfBuffer.toString().length;
+      pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
+      pdfBuffer.write('0000000000 65535 f \n');
+      for (final off in offsets) {
+        pdfBuffer.write('${off.toString().padLeft(10, '0')} 00000 n \n');
+      }
+      pdfBuffer.write('trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\n');
+      pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
+
+      final bytesPdf = latin1.encode(pdfBuffer.toString());
+      final dirTemp = Directory.systemTemp;
+      final rutaPdf = p.join(dirTemp.path, 'informe_caja_amplio_${DateTime.now().millisecondsSinceEpoch}.pdf');
+      final archivoPdf = File(rutaPdf);
+      await archivoPdf.writeAsBytes(bytesPdf, flush: true);
+
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
+      }
+
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.green,
+          content: Text('📄 Informe de caja amplio generado y abierto: $rutaPdf'),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.redAccent,
+          content: Text('Error al generar informe: $e'),
+        ),
+      );
+    }
+  }
+
   void _mostrarDialogoGestionarCajeros() {
     final ctrlNombreCajero = TextEditingController();
     final ctrlNombreCaja = TextEditingController(text: 'Caja 2 - Ventas');
@@ -143,7 +444,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                                 style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                               ),
                               subtitle: Text(
-                                'Contraseña: $pass  |  Rol: ${esAdminUser ? "Administrador (Acceso Total)" : "Cajero (Áreas Permitidas)"}',
+                                'Contraseña: $pass  |  Rol: ${esAdminUser ? "Administrador" : "Cajero"}',
                                 style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
                               ),
                               trailing: esAdminUser && nom == 'Administrador'
@@ -162,7 +463,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                       ),
                       const Divider(color: Colors.white24, height: 22),
                       const Text(
-                        '➕ Crear o Actualizar Cajero / Administrador:',
+                        '➕ Crear o Actualizar Cajero:',
                         style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, fontSize: 13),
                       ),
                       const SizedBox(height: 10),
@@ -170,7 +471,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                         controller: ctrlNombreCajero,
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
-                          labelText: 'Nombre del Cajero (Ej: María, Juan, Cajero 2)',
+                          labelText: 'Nombre del Cajero',
                           labelStyle: const TextStyle(color: Colors.white70),
                           filled: true,
                           fillColor: const Color(0xFF131C31),
@@ -182,7 +483,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                         controller: ctrlNombreCaja,
                         style: const TextStyle(color: Colors.white),
                         decoration: InputDecoration(
-                          labelText: 'Nombre de su Caja (Ej: Caja 1 - Principal, Caja 2 - Express)',
+                          labelText: 'Nombre de su Caja',
                           labelStyle: const TextStyle(color: Colors.white70),
                           filled: true,
                           fillColor: const Color(0xFF131C31),
@@ -197,7 +498,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                               controller: ctrlPasswordCajero,
                               style: const TextStyle(color: Colors.white),
                               decoration: InputDecoration(
-                                labelText: 'Contraseña de Acceso',
+                                labelText: 'Contraseña',
                                 labelStyle: const TextStyle(color: Colors.white70),
                                 filled: true,
                                 fillColor: const Color(0xFF131C31),
@@ -221,8 +522,8 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                                   isExpanded: true,
                                   style: const TextStyle(color: Colors.white),
                                   items: const [
-                                    DropdownMenuItem(value: 'cajero', child: Text('🧑‍💼 Rol: Cajero')),
-                                    DropdownMenuItem(value: 'admin', child: Text('👑 Rol: Administrador')),
+                                    DropdownMenuItem(value: 'cajero', child: Text('🧑‍💼 Cajero')),
+                                    DropdownMenuItem(value: 'admin', child: Text('👑 Administrador')),
                                   ],
                                   onChanged: (val) {
                                     if (val != null) {
@@ -250,7 +551,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                     foregroundColor: Colors.black,
                   ),
                   icon: const Icon(Icons.person_add, size: 18),
-                  label: const Text('Guardar Cajero y Caja', style: TextStyle(fontWeight: FontWeight.bold)),
+                  label: const Text('Guardar Cajero', style: TextStyle(fontWeight: FontWeight.bold)),
                   onPressed: () async {
                     final nom = ctrlNombreCajero.text.trim();
                     final caja = ctrlNombreCaja.text.trim();
@@ -271,7 +572,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                     messenger.showSnackBar(
                       SnackBar(
                         backgroundColor: Colors.green,
-                        content: Text('✅ Usuario "$nom" asignado a "$caja" guardado.'),
+                        content: Text('✅ Usuario "$nom" guardado.'),
                       ),
                     );
                   },
@@ -284,9 +585,6 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
     );
   }
 
-  // ===========================================================================
-  // RESTAURAR LA APLICACIÓN A VALORES DE FÁBRICA
-  // ===========================================================================
   void _confirmarRestaurarDeFabrica() {
     final ctrlConfirmacion = TextEditingController();
 
@@ -316,12 +614,12 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '⚠️ ATENCIÓN: Esta acción borrará TODAS las ventas, recibos, sesiones de caja, lotes de producción, cajeros adicionales y productos personalizados, dejando la aplicación limpia como de fábrica.',
+                  '⚠️ ATENCIÓN: Esta acción borrará TODAS las ventas, recibos, sesiones de caja, lotes de producción y productos.',
                   style: TextStyle(color: Colors.white70, fontSize: 13),
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Escriba FABRICA para confirmar el borrado total:',
+                  'Escriba FABRICA para confirmar:',
                   style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 12),
                 ),
                 const SizedBox(height: 8),
@@ -372,7 +670,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                 messenger.showSnackBar(
                   const SnackBar(
                     backgroundColor: Colors.green,
-                    content: Text('♻️ Sistema restaurado a valores de fábrica exitosamente.'),
+                    content: Text('♻️ Sistema restaurado a valores de fábrica.'),
                   ),
                 );
               },
@@ -400,10 +698,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'Categorías registradas en SQLite:',
-                      style: TextStyle(color: Colors.white70, fontSize: 12),
-                    ),
+                    const Text('Categorías registradas:', style: TextStyle(color: Colors.white70, fontSize: 12)),
                     const SizedBox(height: 8),
                     SizedBox(
                       height: 160,
@@ -462,7 +757,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                       ctrlNuevaCat.clear();
                       setStateDialog(() {});
                       messenger.showSnackBar(
-                        const SnackBar(content: Text('¡Categoría guardada en la base de datos!')),
+                        const SnackBar(content: Text('¡Categoría guardada!')),
                       );
                     }
                   },
@@ -524,7 +819,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                   ),
                   const SizedBox(height: 16),
                   const Text(
-                    'Categoría del Producto:',
+                    'Categoría:',
                     style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 6),
@@ -599,7 +894,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                     await _cargarDatosDB();
                     navigator.pop();
                     messenger.showSnackBar(
-                      const SnackBar(content: Text('¡Nuevo producto creado en la base de datos!')),
+                      const SnackBar(content: Text('¡Nuevo producto creado!')),
                     );
                   },
                   child: const Text('Guardar Producto'),
@@ -620,7 +915,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
           backgroundColor: const Color(0xFF0E1626),
           title: Text('Eliminar: ${producto['nombre']}', style: const TextStyle(color: Colors.redAccent)),
           content: const Text(
-            '¿Está seguro de eliminar este producto de la base de datos?',
+            '¿Está seguro de eliminar este producto?',
             style: TextStyle(color: Colors.white70),
           ),
           actions: [
@@ -645,7 +940,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                 messenger.showSnackBar(
                   const SnackBar(
                     backgroundColor: Colors.redAccent,
-                    content: Text('¡Producto eliminado de la base de datos!'),
+                    content: Text('¡Producto eliminado!'),
                   ),
                 );
               },
@@ -699,7 +994,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                   ),
                   const SizedBox(height: 16),
                   const Text(
-                    'Categoría del Producto:',
+                    'Categoría:',
                     style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 6),
@@ -758,7 +1053,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
 
                     navigator.pop();
                     messenger.showSnackBar(
-                      const SnackBar(content: Text('¡Actualizado y guardado en la base de datos!')),
+                      const SnackBar(content: Text('¡Actualizado con éxito!')),
                     );
                   },
                   child: const Text('Guardar Cambios'),
@@ -776,7 +1071,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0F1D),
       appBar: AppBar(
-        title: const Text('👑 Panel de Administración: Catálogo, Cajeros y Fábrica'),
+        title: Text('👑 Panel: ${_configNegocio['nombre_negocio']} (Admin)'),
         backgroundColor: const Color(0xFF0E1626),
         actions: [
           ElevatedButton.icon(
@@ -784,9 +1079,29 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
               backgroundColor: const Color(0xFF00E5FF),
               foregroundColor: Colors.black,
             ),
+            onPressed: _generarInformeCajaPdf,
+            icon: const Icon(Icons.picture_as_pdf, size: 18),
+            label: const Text('Informe Caja PDF', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFFAB00),
+              foregroundColor: Colors.black,
+            ),
+            onPressed: _mostrarDialogoConfiguracionNegocio,
+            icon: const Icon(Icons.store, size: 18),
+            label: const Text('Config. Negocio & Logo', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+          const SizedBox(width: 8),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.purpleAccent,
+              foregroundColor: Colors.white,
+            ),
             onPressed: _mostrarDialogoGestionarCajeros,
             icon: const Icon(Icons.badge, size: 18),
-            label: const Text('Cajeros y Cajas', style: TextStyle(fontWeight: FontWeight.bold)),
+            label: const Text('Cajeros', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
           const SizedBox(width: 8),
           ElevatedButton.icon(
@@ -796,23 +1111,23 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
             ),
             onPressed: _confirmarRestaurarDeFabrica,
             icon: const Icon(Icons.restore, size: 18),
-            label: const Text('Volver a Fábrica', style: TextStyle(fontWeight: FontWeight.bold)),
+            label: const Text('Fábrica', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
           const SizedBox(width: 8),
           IconButton(
             icon: const Icon(Icons.add_circle_outline, color: Colors.greenAccent),
             onPressed: _mostrarDialogoNuevoProducto,
-            tooltip: 'Agregar Nuevo Producto',
+            tooltip: 'Agregar Producto',
           ),
           IconButton(
             icon: const Icon(Icons.category, color: Color(0xFFFFAB00)),
             onPressed: _mostrarDialogoGestionarCategorias,
-            tooltip: 'Gestionar / Crear Categorías',
+            tooltip: 'Categorías',
           ),
           IconButton(
             icon: const Icon(Icons.refresh, color: Color(0xFF00E5FF)),
             onPressed: _cargarDatosDB,
-            tooltip: 'Actualizar lista',
+            tooltip: 'Actualizar',
           ),
         ],
       ),
@@ -828,6 +1143,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                   final bool stockBajo = stockActual <= 5;
                   final catProd = prod['categoria']?.toString() ?? 'General';
                   final emCat = _obtenerEmojiCategoria(catProd);
+                  final int numeroCorrelativo = index + 1;
 
                   return Card(
                     color: const Color(0xFF131C31),
@@ -836,7 +1152,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                       leading: CircleAvatar(
                         backgroundColor: stockBajo ? Colors.redAccent : Colors.green,
                         child: Text(
-                          '${prod['id'] ?? index}',
+                          '$numeroCorrelativo',
                           style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
                         ),
                       ),
