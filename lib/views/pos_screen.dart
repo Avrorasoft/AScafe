@@ -4,7 +4,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
 import 'admin_inventario_screen.dart';
@@ -76,12 +76,11 @@ class _PosScreenState extends State<PosScreen> {
 
   int _cajaIdActual = 1;
   bool _cajaAbierta = true;
-  double _montoInicialCaja = 0.0;
+  double _montoInicialCaja = 100.0;
   String _fechaAperturaCaja = '';
   double _totalVentasTurno = 0.0;
   double _totalEfectivoTurno = 0.0;
   double _totalQrTurno = 0.0;
-  int _cantidadVentasTurno = 0;
 
   Map<String, dynamic>? _ultimoTicketGenerado;
 
@@ -96,19 +95,13 @@ class _PosScreenState extends State<PosScreen> {
     'logo_path': '',
   };
 
-  final Map<String, String> _emojisCategoriasCustom = {};
-  final Map<int, String> _emojisProductosCustom = {};
+  final Map<String, String> _emojisProductosCustom = {};
 
   static const List<String> _paletaEmojisProductos = [
     '🥟', '🍗', '🥩', '🌶️', '🍯', '🧀', '🥚', '🥓',
     '🥤', '🍑', '🌾', '🟣', '🥮', '☕', '🍵', '🥛',
     '🍰', '🧁', '🍩', '🍪', '🍮', '🍦', '🥪', '🍔',
     '🍕', '🌭', '🍟', '🍿', '🥗', '🍲', '🍱', '🍽️'
-  ];
-
-  static const List<String> _paletaEmojisCategorias = [
-    '⭐', '🥟', '🥤', '☕', '🍰', '🥐', '🥪', '🍔',
-    '🍕', '🍿', '🥛', '🥗', '🍲', '🍱', '🧊', '🍽️'
   ];
 
   bool get _esAdminActivo {
@@ -182,9 +175,6 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   String _obtenerEmojiCategoria(String categoria) {
-    if (_emojisCategoriasCustom.containsKey(categoria)) {
-      return _emojisCategoriasCustom[categoria]!;
-    }
     final catLower = categoria.trim().toLowerCase();
     if (catLower == 'todos') return '⭐';
     if (catLower.contains('salteña') || catLower.contains('saltena')) return '🥟';
@@ -205,8 +195,8 @@ class _PosScreenState extends State<PosScreen> {
     if (prod.emojiPersonalizado != null && prod.emojiPersonalizado!.isNotEmpty) {
       return prod.emojiPersonalizado!;
     }
-    if (_emojisProductosCustom.containsKey(prod.id)) {
-      return _emojisProductosCustom[prod.id]!;
+    if (_emojisProductosCustom.containsKey(prod.id.toString())) {
+      return _emojisProductosCustom[prod.id.toString()]!;
     }
     final nombreLower = prod.nombre.trim().toLowerCase();
     final catLower = prod.categoria.trim().toLowerCase();
@@ -239,9 +229,248 @@ class _PosScreenState extends State<PosScreen> {
     return '🥟';
   }
 
-  // ===========================================================================
-  // GENERADOR DE RECIBO PDF (80MM) CON NOMBRE, DIRECCIÓN Y CELULAR PERSONALIZADOS
-  // ===========================================================================
+  void _mostrarLogoAmpliado(String rutaLogo) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF0E1626),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: Color(0xFFFFAB00), width: 2),
+        ),
+        title: const Text(
+          '🌟 Salteñería Premium - Identidad Visual',
+          style: TextStyle(color: Color(0xFFFFAB00), fontSize: 16, fontWeight: FontWeight.bold),
+          textAlign: TextAlign.center,
+        ),
+        content: SizedBox(
+          width: 320,
+          height: 320,
+          child: ClipOval(
+            child: Image.file(
+              File(rutaLogo),
+              fit: BoxFit.cover,
+            ),
+          ),
+        ),
+        actions: [
+          Center(
+            child: ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFFFFAB00),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () => Navigator.pop(context),
+              icon: const Icon(Icons.close),
+              label: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _mostrarDialogoConfiguracionNegocio() {
+    if (!_esAdminActivo) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.redAccent,
+          content: Text('🔒 Permiso denegado: Solo el Administrador puede modificar los datos y el logo del negocio.'),
+        ),
+      );
+      return;
+    }
+
+    final ctrlNombre = TextEditingController(text: _configNegocio['nombre_negocio'] ?? 'AScafe');
+    final ctrlDireccion = TextEditingController(text: _configNegocio['direccion_negocio'] ?? 'Riberalta, Beni - Bolivia');
+    final ctrlCelular = TextEditingController(text: _configNegocio['celular_negocio'] ?? '+591 70000000');
+    final ctrlLogoPath = TextEditingController(text: _configNegocio['logo_path'] ?? '');
+
+    showDialog(
+      context: context,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (sbContext, setStateDialog) {
+            Future<void> seleccionarLogoGrafico() async {
+              try {
+                FilePickerResult? result = await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: ['png', 'jpg', 'jpeg'],
+                  allowMultiple: false,
+                );
+
+                if (result != null && result.files.single.path != null) {
+                  setStateDialog(() {
+                    ctrlLogoPath.text = result.files.single.path!;
+                  });
+                }
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(backgroundColor: Colors.red, content: Text('Error al seleccionar imagen: $e')),
+                );
+              }
+            }
+
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0E1626),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
+              ),
+              title: const Row(
+                children: [
+                  Text('⚙️ ', style: TextStyle(fontSize: 22)),
+                  Text(
+                    'Configuración del Establecimiento y Logo',
+                    style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                ],
+              ),
+              content: SizedBox(
+                width: 440,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      const Text(
+                        'Previsualización del Logo Grande:',
+                        style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 10),
+                      Container(
+                        width: 130,
+                        height: 130,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF131C31),
+                          shape: BoxShape.circle,
+                          border: Border.all(color: const Color(0xFFFFAB00), width: 2.5),
+                        ),
+                        child: ClipOval(
+                          child: ctrlLogoPath.text.isNotEmpty && File(ctrlLogoPath.text).existsSync()
+                              ? Image.file(
+                                  File(ctrlLogoPath.text),
+                                  fit: BoxFit.cover,
+                                  width: 130,
+                                  height: 130,
+                                )
+                              : const Icon(Icons.store, size: 60, color: Colors.grey),
+                        ),
+                      ),
+                      const SizedBox(height: 14),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextField(
+                              controller: ctrlLogoPath,
+                              readOnly: true,
+                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                              decoration: InputDecoration(
+                                labelText: 'Archivo de Logo Seleccionado',
+                                labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                                filled: true,
+                                fillColor: const Color(0xFF131C31),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton.icon(
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color(0xFFFFAB00),
+                              foregroundColor: Colors.black,
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                            ),
+                            onPressed: seleccionarLogoGrafico,
+                            icon: const Icon(Icons.folder_open, size: 16),
+                            label: const Text('Examinar...', style: TextStyle(fontWeight: FontWeight.bold)),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      TextField(
+                        controller: ctrlNombre,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Nombre Comercial / Negocio',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlDireccion,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Dirección',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlCelular,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          labelText: 'Celular de Contacto',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFAB00),
+                    foregroundColor: Colors.black,
+                  ),
+                  icon: const Icon(Icons.save, size: 18),
+                  label: const Text('Guardar Configuración', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    final navigator = Navigator.of(dialogContext);
+                    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+                    await _dbService.guardarConfiguracionNegocio({
+                      'nombre_negocio': ctrlNombre.text.trim(),
+                      'direccion_negocio': ctrlDireccion.text.trim(),
+                      'celular_negocio': ctrlCelular.text.trim(),
+                      'logo_path': ctrlLogoPath.text.trim(),
+                    });
+
+                    navigator.pop();
+                    await _inicializarSistemaPOS();
+
+                    if (!mounted) return;
+                    scaffoldMessenger.showSnackBar(
+                      const SnackBar(
+                        backgroundColor: Colors.green,
+                        content: Text('✨ Configuración y logo actualizados exitosamente.'),
+                      ),
+                    );
+                  },
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   String _limpiarTextoPdf(String input) {
     return input
         .replaceAll('á', 'a')
@@ -422,7 +651,7 @@ class _PosScreenState extends State<PosScreen> {
           setState(() {
             _cajaIdActual = (sesion['id'] as num).toInt();
             _cajaAbierta = true;
-            _montoInicialCaja = (sesion['monto_inicial'] as num?)?.toDouble() ?? 0.0;
+            _montoInicialCaja = (sesion['monto_inicial'] as num?)?.toDouble() ?? 100.0;
             _fechaAperturaCaja = sesion['fecha_apertura']?.toString() ?? DateTime.now().toIso8601String();
           });
         }
@@ -477,7 +706,6 @@ class _PosScreenState extends State<PosScreen> {
           _totalVentasTurno = sumaTotal;
           _totalEfectivoTurno = sumaEfectivo;
           _totalQrTurno = sumaQr;
-          _cantidadVentasTurno = ventasRows.length;
         });
       }
     } catch (_) {}
@@ -507,7 +735,7 @@ class _PosScreenState extends State<PosScreen> {
               precio,
               categoria: cat,
               stock: stock,
-              emojiPersonalizado: _emojisProductosCustom[id],
+              emojiPersonalizado: _emojisProductosCustom[id.toString()],
             ),
           );
         }
@@ -1115,11 +1343,12 @@ class _PosScreenState extends State<PosScreen> {
                   TextButton.icon(
                     onPressed: () async {
                       final navigator = Navigator.of(dialogContext);
-                      final messenger = ScaffoldMessenger.of(context);
+                      final scaffoldMessenger = ScaffoldMessenger.of(context);
                       await _dbService.eliminarProducto(productoExistente.id);
                       navigator.pop();
                       await _cargarDatosDesdeSQLite();
-                      messenger.showSnackBar(
+                      if (!mounted) return;
+                      scaffoldMessenger.showSnackBar(
                         const SnackBar(
                           backgroundColor: Colors.redAccent,
                           content: Text('🗑️ Producto eliminado de la base de datos.'),
@@ -1148,10 +1377,10 @@ class _PosScreenState extends State<PosScreen> {
                     if (nombre.isEmpty) return;
 
                     final navigator = Navigator.of(dialogContext);
-                    final messenger = ScaffoldMessenger.of(context);
+                    final scaffoldMessenger = ScaffoldMessenger.of(context);
 
                     if (esEdicion) {
-                      _emojisProductosCustom[productoExistente.id] = emojiElegido;
+                      _emojisProductosCustom[productoExistente.id.toString()] = emojiElegido;
                       await _dbService.actualizarProducto(
                         productoExistente.id,
                         precio,
@@ -1181,13 +1410,14 @@ class _PosScreenState extends State<PosScreen> {
                         'precio': precio,
                         'stock_actual': stock,
                       });
-                      _emojisProductosCustom[nuevoId] = emojiElegido;
+                      _emojisProductosCustom[nuevoId.toString()] = emojiElegido;
                     }
 
                     navigator.pop();
                     await _cargarDatosDesdeSQLite();
 
-                    messenger.showSnackBar(
+                    if (!mounted) return;
+                    scaffoldMessenger.showSnackBar(
                       SnackBar(
                         backgroundColor: Colors.green,
                         content: Text('$emojiElegido "$nombre" guardado correctamente.'),
@@ -1212,173 +1442,172 @@ class _PosScreenState extends State<PosScreen> {
     showDialog(
       context: context,
       builder: (dialogContext) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF0E1626),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-            side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
-          ),
-          title: Row(
-            children: [
-              const Text('💰 ', style: TextStyle(fontSize: 22)),
-              Expanded(
-                child: Text(
-                  _cajaAbierta ? 'Arqueo: $_nombreCajaActiva (#$_cajaIdActual)' : 'Abrir Turno: $_nombreCajaActiva',
-                  style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
-                ),
+        return StatefulBuilder(
+          builder: (contextDialog, setStateDialog) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF0E1626),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(14),
+                side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
               ),
-            ],
-          ),
-          content: SizedBox(
-            width: 390,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF131C31),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Column(
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Cajero Responsable:', style: TextStyle(color: Colors.white70)),
-                          Text(_nombreCajeroActivo, style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Fecha Apertura:', style: TextStyle(color: Colors.white70)),
-                          Text(aperturaCorta, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Base Inicial:', style: TextStyle(color: Colors.white70)),
-                          Text('Bs. ${_montoInicialCaja.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold)),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Ventas en Efectivo:', style: TextStyle(color: Colors.white70)),
-                          Text('Bs. ${_totalEfectivoTurno.toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent)),
-                        ],
-                      ),
-                      const SizedBox(height: 6),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('Ventas por QR:', style: TextStyle(color: Colors.white70)),
-                          Text('Bs. ${_totalQrTurno.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF00E5FF))),
-                        ],
-                      ),
-                      const Divider(color: Colors.white24, height: 18),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                        children: [
-                          const Text('EFECTIVO EN GAVETA:', style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold)),
-                          Text(
-                            'Bs. ${(_montoInicialCaja + _totalEfectivoTurno).toStringAsFixed(2)}',
-                            style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                if (!_cajaAbierta) ...[
-                  const SizedBox(height: 14),
-                  TextField(
-                    controller: ctrlMontoInicial,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    style: const TextStyle(color: Colors.white),
-                    decoration: InputDecoration(
-                      labelText: 'Monto Base Inicial (Bs.)',
-                      labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
-                      filled: true,
-                      fillColor: const Color(0xFF131C31),
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              title: Row(
+                children: [
+                  const Text('💰 ', style: TextStyle(fontSize: 22)),
+                  Expanded(
+                    child: Text(
+                      _cajaAbierta ? 'Arqueo de Caja: $_nombreCajaActiva (#$_cajaIdActual)' : 'Abrir Turno: $_nombreCajaActiva',
+                      style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
                     ),
                   ),
                 ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(dialogContext).pop(),
-              child: const Text('Cerrar Ventana', style: TextStyle(color: Colors.grey)),
-            ),
-            if (_cajaAbierta)
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.redAccent,
-                  foregroundColor: Colors.white,
-                ),
-                icon: const Icon(Icons.lock_clock, size: 18),
-                label: const Text('Cerrar Turno de Caja'),
-                onPressed: () async {
-                  final navigator = Navigator.of(dialogContext);
-                  final db = await _dbService.database;
-                  await db.update(
-                    'caja_sesiones',
-                    {
-                      'fecha_cierre': DateTime.now().toIso8601String(),
-                      'monto_final': _montoInicialCaja + _totalVentasTurno,
-                      'estado': 'Cerrada',
-                    },
-                    where: 'id = ?',
-                    whereArgs: [_cajaIdActual],
-                  );
-                  if (mounted) {
-                    setState(() => _cajaAbierta = false);
-                  }
-                  navigator.pop();
-                },
-              )
-            else
-              ElevatedButton.icon(
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: Colors.green,
-                  foregroundColor: Colors.white,
-                ),
-                icon: const Icon(Icons.lock_open, size: 18),
-                label: const Text('Abrir Nuevo Turno'),
-                onPressed: () async {
-                  final navigator = Navigator.of(dialogContext);
-                  final base = double.tryParse(ctrlMontoInicial.text.trim()) ?? 100.0;
-                  final ahoraIso = DateTime.now().toIso8601String();
-                  final db = await _dbService.database;
-                  final int nuevoId = await db.insert('caja_sesiones', {
-                    'cajero_nombre': _nombreCajeroActivo,
-                    'nombre_caja': _nombreCajaActiva,
-                    'fecha_apertura': ahoraIso,
-                    'monto_inicial': base,
-                    'estado': 'Abierta',
-                  });
-                  if (mounted) {
-                    setState(() {
-                      _cajaIdActual = nuevoId;
-                      _montoInicialCaja = base;
-                      _fechaAperturaCaja = ahoraIso;
-                      _cajaAbierta = true;
-                    });
-                  }
-                  await _calcularResumenVentasTurno();
-                  navigator.pop();
-                },
               ),
-          ],
+              content: SizedBox(
+                width: 390,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF131C31),
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                      child: Column(
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Cajero Responsable:', style: TextStyle(color: Colors.white70)),
+                              Text(_nombreCajeroActivo, style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Fecha Apertura:', style: TextStyle(color: Colors.white70)),
+                              Text(aperturaCorta, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Ventas en Efectivo:', style: TextStyle(color: Colors.white70)),
+                              Text('Bs. ${_totalEfectivoTurno.toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent)),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Ventas por QR:', style: TextStyle(color: Colors.white70)),
+                              Text('Bs. ${_totalQrTurno.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF00E5FF))),
+                            ],
+                          ),
+                          const Divider(color: Colors.white24, height: 18),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('EFECTIVO EN GAVETA:', style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold)),
+                              Text(
+                                'Bs. ${(_montoInicialCaja + _totalEfectivoTurno).toStringAsFixed(2)}',
+                                style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+                    // Campo editable para configurar la Base Inicial en cualquier momento que se abra este diálogo
+                    TextField(
+                      controller: ctrlMontoInicial,
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                      decoration: InputDecoration(
+                        labelText: '💵 Monto Base Inicial / Fondo de Cambio (Bs.)',
+                        labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                        filled: true,
+                        fillColor: const Color(0xFF131C31),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cerrar Ventana', style: TextStyle(color: Colors.grey)),
+                ),
+                ElevatedButton.icon(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFFFAB00),
+                    foregroundColor: Colors.black,
+                  ),
+                  icon: const Icon(Icons.save, size: 18),
+                  label: const Text('Actualizar Base / Guardar', style: TextStyle(fontWeight: FontWeight.bold)),
+                  onPressed: () async {
+                    final nuevoMontoBase = double.tryParse(ctrlMontoInicial.text.trim()) ?? _montoInicialCaja;
+                    final navigator = Navigator.of(dialogContext);
+                    final db = await _dbService.database;
+
+                    // Actualizamos en la base de datos la sesión actual de caja con la nueva base ingresada
+                    await db.update(
+                      'caja_sesiones',
+                      {'monto_inicial': nuevoMontoBase},
+                      where: 'id = ?',
+                      whereArgs: [_cajaIdActual],
+                    );
+
+                    if (mounted) {
+                      setState(() {
+                        _montoInicialCaja = nuevoMontoBase;
+                      });
+                    }
+
+                    navigator.pop();
+                    if (!mounted) return;
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        backgroundColor: Colors.green,
+                        content: Text('✅ Base inicial actualizada a Bs. ${nuevoMontoBase.toStringAsFixed(2)}'),
+                      ),
+                    );
+                  },
+                ),
+                if (_cajaAbierta)
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.redAccent,
+                      foregroundColor: Colors.white,
+                    ),
+                    icon: const Icon(Icons.lock_clock, size: 18),
+                    label: const Text('Cerrar Turno'),
+                    onPressed: () async {
+                      final navigator = Navigator.of(dialogContext);
+                      final db = await _dbService.database;
+                      await db.update(
+                        'caja_sesiones',
+                        {
+                          'fecha_cierre': DateTime.now().toIso8601String(),
+                          'monto_final': _montoInicialCaja + _totalVentasTurno,
+                          'estado': 'Cerrada',
+                        },
+                        where: 'id = ?',
+                        whereArgs: [_cajaIdActual],
+                      );
+                      if (mounted) {
+                        setState(() => _cajaAbierta = false);
+                      }
+                      navigator.pop();
+                    },
+                  ),
+              ],
+            );
+          },
         );
       },
     );
@@ -1404,23 +1633,63 @@ class _PosScreenState extends State<PosScreen> {
       appBar: AppBar(
         backgroundColor: const Color(0xFF0E1626),
         elevation: 2,
+        toolbarHeight: 65,
         title: Row(
           children: [
             if (logoPath.isNotEmpty && File(logoPath).existsSync())
               Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: Image.file(File(logoPath), width: 30, height: 30, fit: BoxFit.cover),
+                padding: const EdgeInsets.only(right: 12),
+                child: GestureDetector(
+                  onTap: () => _mostrarLogoAmpliado(logoPath),
+                  child: Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(color: const Color(0xFFFFAB00), width: 2),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: ClipOval(
+                      child: Image.file(
+                        File(logoPath),
+                        width: 52,
+                        height: 52,
+                        fit: BoxFit.cover,
+                      ),
+                    ),
+                  ),
                 ),
               )
             else
-              const Text('☕ ', style: TextStyle(fontSize: 20)),
-            Text(
-              '$nombreNeg | $_nombreCajaActiva | 👤 $_nombreCajeroActivo',
-              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+              const Padding(
+                padding: EdgeInsets.only(right: 8),
+                child: Text('🥟', style: TextStyle(fontSize: 28)),
+              ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    '$nombreNeg | $_nombreCajaActiva',
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: Colors.white),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '👤 Cajero: $_nombreCajeroActivo',
+                    style: const TextStyle(fontSize: 11, color: Colors.grey),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(width: 12),
+            const SizedBox(width: 8),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(
@@ -1451,15 +1720,21 @@ class _PosScreenState extends State<PosScreen> {
               tooltip: 'Ver / Imprimir Último Recibo PDF',
               onPressed: () => _mostrarDialogoTicketVenta(_ultimoTicketGenerado!),
             ),
-          if (_esAdminActivo)
+          if (_esAdminActivo) ...[
+            IconButton(
+              icon: const Icon(Icons.store, color: Color(0xFFFFAB00)),
+              tooltip: 'Configurar Establecimiento y Logo',
+              onPressed: _mostrarDialogoConfiguracionNegocio,
+            ),
             IconButton(
               icon: const Icon(Icons.add_box, color: Colors.greenAccent),
               tooltip: 'Crear Nuevo Producto (Solo Admin)',
               onPressed: () => _mostrarDialogoCrearEditarProducto(),
             ),
+          ],
           IconButton(
             icon: const Icon(Icons.point_of_sale, color: Colors.white),
-            tooltip: 'Arqueo de Caja del Cajero',
+            tooltip: 'Configurar Base y Arqueo de Caja',
             onPressed: _mostrarDialogoControlCaja,
           ),
           if (_esAdminActivo)
