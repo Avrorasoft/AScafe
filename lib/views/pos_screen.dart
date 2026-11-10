@@ -76,11 +76,12 @@ class _PosScreenState extends State<PosScreen> {
 
   int _cajaIdActual = 1;
   bool _cajaAbierta = true;
-  double _montoInicialCaja = 100.0;
+  double _montoInicialCaja = 0.0;
   String _fechaAperturaCaja = '';
   double _totalVentasTurno = 0.0;
   double _totalEfectivoTurno = 0.0;
   double _totalQrTurno = 0.0;
+  double _recaudacionDiaAnteriorRef = 0.0;
 
   Map<String, dynamic>? _ultimoTicketGenerado;
 
@@ -229,47 +230,6 @@ class _PosScreenState extends State<PosScreen> {
     return '🥟';
   }
 
-  void _mostrarLogoAmpliado(String rutaLogo) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF0E1626),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
-          side: const BorderSide(color: Color(0xFFFFAB00), width: 2),
-        ),
-        title: const Text(
-          '🌟 Salteñería Premium - Identidad Visual',
-          style: TextStyle(color: Color(0xFFFFAB00), fontSize: 16, fontWeight: FontWeight.bold),
-          textAlign: TextAlign.center,
-        ),
-        content: SizedBox(
-          width: 320,
-          height: 320,
-          child: ClipOval(
-            child: Image.file(
-              File(rutaLogo),
-              fit: BoxFit.cover,
-            ),
-          ),
-        ),
-        actions: [
-          Center(
-            child: ElevatedButton.icon(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: const Color(0xFFFFAB00),
-                foregroundColor: Colors.black,
-              ),
-              onPressed: () => Navigator.pop(context),
-              icon: const Icon(Icons.close),
-              label: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.bold)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _mostrarDialogoConfiguracionNegocio() {
     if (!_esAdminActivo) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -340,20 +300,20 @@ class _PosScreenState extends State<PosScreen> {
                       ),
                       const SizedBox(height: 10),
                       Container(
-                        width: 130,
-                        height: 130,
+                        width: 70,
+                        height: 70,
                         decoration: BoxDecoration(
                           color: const Color(0xFF131C31),
                           shape: BoxShape.circle,
-                          border: Border.all(color: const Color(0xFFFFAB00), width: 2.5),
+                          border: Border.all(color: const Color(0xFFFFAB00), width: 3),
                         ),
                         child: ClipOval(
                           child: ctrlLogoPath.text.isNotEmpty && File(ctrlLogoPath.text).existsSync()
                               ? Image.file(
                                   File(ctrlLogoPath.text),
                                   fit: BoxFit.cover,
-                                  width: 130,
-                                  height: 130,
+                                  width: 70,
+                                  height: 70,
                                 )
                               : const Icon(Icons.store, size: 60, color: Colors.grey),
                         ),
@@ -634,10 +594,116 @@ class _PosScreenState extends State<PosScreen> {
     }
   }
 
+  Future<void> _generarInformeCajeroPdf() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final db = await _dbService.database;
+      final List ventasCajero = await db.query(
+        'ventas',
+        where: 'caja_id = ? AND cajero_nombre = ?',
+        whereArgs: [_cajaIdActual, _nombreCajeroActivo],
+      );
+
+      final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
+      final List<String> lineas = [];
+      lineas.add('======================================');
+      lineas.add('      INFORME INDIVIDUAL DE CAJERO    ');
+      lineas.add('       ${_limpiarTextoPdf(nombreNeg).toUpperCase()}        ');
+      lineas.add('======================================');
+      lineas.add('CAJERO: ${_limpiarTextoPdf(_nombreCajeroActivo)}');
+      lineas.add('CAJA: ${_limpiarTextoPdf(_nombreCajaActiva)}');
+      lineas.add('FECHA: $_fechaActual');
+      lineas.add('TURNO ID: #$_cajaIdActual');
+      lineas.add('--------------------------------------');
+      lineas.add('VENTAS REGISTRADAS: ${ventasCajero.length}');
+      
+      double totalCajero = 0.0;
+      double efectivoCajero = 0.0;
+      double qrCajero = 0.0;
+
+      for (final v in ventasCajero) {
+        final m = v as Map;
+        final t = (m['total'] as num?)?.toDouble() ?? 0.0;
+        final met = m['metodo_pago']?.toString() ?? 'Efectivo';
+        totalCajero += t;
+        if (met.toUpperCase().contains('QR')) {
+          qrCajero += t;
+        } else {
+          efectivoCajero += t;
+        }
+      }
+
+      lineas.add('TOTAL RECAUDADO: Bs. ${totalCajero.toStringAsFixed(2)}');
+      lineas.add(' - Efectivo: Bs. ${efectivoCajero.toStringAsFixed(2)}');
+      lineas.add(' - Pagos QR: Bs. ${qrCajero.toStringAsFixed(2)}');
+      lineas.add('BASE INICIAL (FONDO): Bs. ${_montoInicialCaja.toStringAsFixed(2)}');
+      lineas.add('EFECTIVO EN GAVETA: Bs. ${(_montoInicialCaja + efectivoCajero).toStringAsFixed(2)}');
+      lineas.add('======================================');
+      lineas.add('FIRMA CAJERO: ________________________');
+
+      final int altoPagina = 180 + (lineas.length * 14);
+      final StringBuffer contenidoStream = StringBuffer();
+      contenidoStream.writeln('BT');
+      contenidoStream.writeln('/F1 8.5 Tf');
+      int yPos = altoPagina - 25;
+      for (final l in lineas) {
+        contenidoStream.writeln('12 $yPos Td');
+        contenidoStream.writeln('($l) Tj');
+        contenidoStream.writeln('-12 -$yPos Td');
+        yPos -= 13;
+      }
+      contenidoStream.writeln('ET');
+
+      final String streamStr = contenidoStream.toString();
+      final List<String> objetos = [
+        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 226 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
+        '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
+        '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
+      ];
+
+      final StringBuffer pdfBuffer = StringBuffer();
+      pdfBuffer.write('%PDF-1.4\n');
+      final List<int> offsets = [];
+      for (final obj in objetos) {
+        offsets.add(pdfBuffer.toString().length);
+        pdfBuffer.write(obj);
+      }
+      final int xrefStart = pdfBuffer.toString().length;
+      pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
+      pdfBuffer.write('0000000000 65535 f \n');
+      for (final off in offsets) {
+        pdfBuffer.write('${off.toString().padLeft(10, '0')} 00000 n \n');
+      }
+      pdfBuffer.write('trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\n');
+      pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
+
+      final dirTemp = Directory.systemTemp;
+      final rutaPdf = p.join(dirTemp.path, 'informe_cajero_${_nombreCajeroActivo}_$_cajaIdActual.pdf');
+      await File(rutaPdf).writeAsBytes(latin1.encode(pdfBuffer.toString()), flush: true);
+
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
+      }
+
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.green,
+          content: Text('📄 Informe individual en PDF generado: $rutaPdf'),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(backgroundColor: Colors.redAccent, content: Text('Error al generar informe PDF: $e')),
+      );
+    }
+  }
+
   Future<void> _verificarEstadoCajaSQLite() async {
     try {
       final db = await _dbService.database;
-      final List sesiones = await db.query(
+      final List sesionesAbiertas = await db.query(
         'caja_sesiones',
         where: "estado = 'Abierta' AND nombre_caja = ?",
         whereArgs: [_nombreCajaActiva],
@@ -645,59 +711,127 @@ class _PosScreenState extends State<PosScreen> {
         limit: 1,
       );
 
-      if (sesiones.isNotEmpty) {
-        final sesion = sesiones.first as Map;
-        if (mounted) {
-          setState(() {
-            _cajaIdActual = (sesion['id'] as num).toInt();
-            _cajaAbierta = true;
-            _montoInicialCaja = (sesion['monto_inicial'] as num?)?.toDouble() ?? 100.0;
-            _fechaAperturaCaja = sesion['fecha_apertura']?.toString() ?? DateTime.now().toIso8601String();
-          });
+      final fechaHoyStr = '${DateTime.now().year}-${DateTime.now().month.toString().padLeft(2, '0')}-${DateTime.now().day.toString().padLeft(2, '0')}';
+
+      final List sesionesAnteriores = await db.query(
+        'caja_sesiones',
+        where: "nombre_caja = ? AND fecha_apertura NOT LIKE ?",
+        whereArgs: [_nombreCajaActiva, '$fechaHoyStr%'],
+        orderBy: 'id DESC',
+        limit: 1,
+      );
+
+      if (sesionesAnteriores.isNotEmpty) {
+        final ultimaAnterior = sesionesAnteriores.first as Map;
+        final idAnt = (ultimaAnterior['id'] as num).toInt();
+        final List ventasAnt = await db.query('ventas', where: 'caja_id = ?', whereArgs: [idAnt]);
+        double sumaRef = 0.0;
+        for (final va in ventasAnt) {
+          sumaRef += (va as Map)['total'] as num? ?? 0.0;
+        }
+        _recaudacionDiaAnteriorRef = sumaRef;
+      }
+
+      if (sesionesAbiertas.isNotEmpty) {
+        final sesion = sesionesAbiertas.first as Map;
+        final fechaAperturaSesion = sesion['fecha_apertura']?.toString() ?? '';
+        
+        bool esDeOtroDia = false;
+        if (fechaAperturaSesion.isNotEmpty) {
+          try {
+            final dtApertura = DateTime.parse(fechaAperturaSesion);
+            final ahora = DateTime.now();
+            if (dtApertura.year != ahora.year || dtApertura.month != ahora.month || dtApertura.day != ahora.day) {
+              esDeOtroDia = true;
+            }
+          } catch (_) {}
+        }
+
+        if (esDeOtroDia) {
+          final idAntiguo = (sesion['id'] as num).toInt();
+          await db.update(
+            'caja_sesiones',
+            {
+              'fecha_cierre': DateTime.now().toIso8601String(),
+              'estado': 'Cerrada',
+            },
+            where: 'id = ?',
+            whereArgs: [idAntiguo],
+          );
+          await _abrirNuevoTurnoEnCero(db, fechaHoyStr);
+        } else {
+          if (mounted) {
+            setState(() {
+              _cajaIdActual = (sesion['id'] as num).toInt();
+              _cajaAbierta = true;
+              _montoInicialCaja = (sesion['monto_inicial'] as num?)?.toDouble() ?? 0.0;
+              _fechaAperturaCaja = fechaAperturaSesion;
+            });
+          }
         }
       } else {
-        final fechaHoy = DateTime.now().toIso8601String();
-        final int nuevoId = await db.insert('caja_sesiones', {
-          'cajero_nombre': _nombreCajeroActivo,
-          'nombre_caja': _nombreCajaActiva,
-          'fecha_apertura': fechaHoy,
-          'monto_inicial': 100.0,
-          'estado': 'Abierta',
-        });
-        if (mounted) {
-          setState(() {
-            _cajaIdActual = nuevoId;
-            _cajaAbierta = true;
-            _montoInicialCaja = 100.0;
-            _fechaAperturaCaja = fechaHoy;
-          });
-        }
+        await _abrirNuevoTurnoEnCero(db, DateTime.now().toIso8601String());
       }
     } catch (_) {}
+  }
+
+  Future<void> _abrirNuevoTurnoEnCero(dynamic db, String fechaIso) async {
+    final int nuevoId = await db.insert('caja_sesiones', {
+      'cajero_nombre': _nombreCajeroActivo,
+      'nombre_caja': _nombreCajaActiva,
+      'fecha_apertura': fechaIso,
+      'monto_inicial': 0.0,
+      'estado': 'Abierta',
+    });
+    if (mounted) {
+      setState(() {
+        _cajaIdActual = nuevoId;
+        _cajaAbierta = true;
+        _montoInicialCaja = 0.0;
+        _totalVentasTurno = 0.0;
+        _totalEfectivoTurno = 0.0;
+        _totalQrTurno = 0.0;
+        _fechaAperturaCaja = fechaIso;
+      });
+    }
   }
 
   Future<void> _calcularResumenVentasTurno() async {
     try {
       final db = await _dbService.database;
-      final List ventasRows = await db.query(
-        'ventas',
-        where: 'caja_id = ?',
-        whereArgs: [_cajaIdActual],
+      final fechaHoyStr = '${DateTime.now().year}-${DateTime.now().month.toString().padLeft(2, '0')}-${DateTime.now().day.toString().padLeft(2, '0')}';
+      final List sesionesDelDia = await db.query(
+        'caja_sesiones',
+        where: "nombre_caja = ? AND fecha_apertura LIKE ?",
+        whereArgs: [_nombreCajaActiva, '$fechaHoyStr%'],
       );
+
+      final List<int> idsCajasDelDia = sesionesDelDia.map((s) => (s as Map)['id'] as int).toList();
+      if (!idsCajasDelDia.contains(_cajaIdActual)) {
+        idsCajasDelDia.add(_cajaIdActual);
+      }
 
       double sumaTotal = 0.0;
       double sumaEfectivo = 0.0;
       double sumaQr = 0.0;
 
-      for (final v in ventasRows) {
-        final mapa = v as Map;
-        final monto = (mapa['total'] as num?)?.toDouble() ?? 0.0;
-        final metodo = mapa['metodo_pago']?.toString() ?? 'Efectivo';
-        sumaTotal += monto;
-        if (metodo.toUpperCase().contains('QR')) {
-          sumaQr += monto;
-        } else {
-          sumaEfectivo += monto;
+      for (final idCaja in idsCajasDelDia) {
+        final List ventasRows = await db.query(
+          'ventas',
+          where: 'caja_id = ?',
+          whereArgs: [idCaja],
+        );
+
+        for (final v in ventasRows) {
+          final mapa = v as Map;
+          final monto = (mapa['total'] as num?)?.toDouble() ?? 0.0;
+          final metodo = mapa['metodo_pago']?.toString() ?? 'Efectivo';
+          sumaTotal += monto;
+          if (metodo.toUpperCase().contains('QR')) {
+            sumaQr += monto;
+          } else {
+            sumaEfectivo += monto;
+          }
         }
       }
 
@@ -1462,79 +1596,104 @@ class _PosScreenState extends State<PosScreen> {
                 ],
               ),
               content: SizedBox(
-                width: 390,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFF131C31),
-                        borderRadius: BorderRadius.circular(10),
+                width: 410,
+                child: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF131C31),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Column(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Cajero Responsable:', style: TextStyle(color: Colors.white70)),
+                                Text(_nombreCajeroActivo, style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Fecha Apertura:', style: TextStyle(color: Colors.white70)),
+                                Text(aperturaCorta, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Recaudación Día Anterior (Ref):', style: TextStyle(color: Colors.grey)),
+                                Text('Bs. ${_recaudacionDiaAnteriorRef.toStringAsFixed(2)}', style: const TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Ventas en Efectivo:', style: TextStyle(color: Colors.white70)),
+                                Text('Bs. ${_totalEfectivoTurno.toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent)),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('Ventas por QR:', style: TextStyle(color: Colors.white70)),
+                                Text('Bs. ${_totalQrTurno.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF00E5FF))),
+                              ],
+                            ),
+                            const Divider(color: Colors.white24, height: 18),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                const Text('EFECTIVO EN GAVETA:', style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold)),
+                                Text(
+                                  'Bs. ${(_montoInicialCaja + _totalEfectivoTurno).toStringAsFixed(2)}',
+                                  style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
                       ),
-                      child: Column(
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Cajero Responsable:', style: TextStyle(color: Colors.white70)),
-                              Text(_nombreCajeroActivo, style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold)),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Fecha Apertura:', style: TextStyle(color: Colors.white70)),
-                              Text(aperturaCorta, style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Ventas en Efectivo:', style: TextStyle(color: Colors.white70)),
-                              Text('Bs. ${_totalEfectivoTurno.toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent)),
-                            ],
-                          ),
-                          const SizedBox(height: 6),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('Ventas por QR:', style: TextStyle(color: Colors.white70)),
-                              Text('Bs. ${_totalQrTurno.toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF00E5FF))),
-                            ],
-                          ),
-                          const Divider(color: Colors.white24, height: 18),
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text('EFECTIVO EN GAVETA:', style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold)),
-                              Text(
-                                'Bs. ${(_montoInicialCaja + _totalEfectivoTurno).toStringAsFixed(2)}',
-                                style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
-                              ),
-                            ],
-                          ),
-                        ],
+                      const SizedBox(height: 14),
+                      TextField(
+                        controller: ctrlMontoInicial,
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                        style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+                        decoration: InputDecoration(
+                          labelText: '💵 Monto Base Inicial / Fondo de Cambio (Bs.)',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 14),
-                    // Campo editable para configurar la Base Inicial en cualquier momento que se abra este diálogo
-                    TextField(
-                      controller: ctrlMontoInicial,
-                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                      style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
-                      decoration: InputDecoration(
-                        labelText: '💵 Monto Base Inicial / Fondo de Cambio (Bs.)',
-                        labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
-                        filled: true,
-                        fillColor: const Color(0xFF131C31),
-                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF00E5FF),
+                            foregroundColor: Colors.black,
+                          ),
+                          onPressed: () {
+                            Navigator.of(dialogContext).pop();
+                            _generarInformeCajeroPdf();
+                          },
+                          icon: const Icon(Icons.picture_as_pdf, size: 18),
+                          label: const Text('Imprimir Mi Informe Individual (PDF)', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
               actions: [
@@ -1548,13 +1707,12 @@ class _PosScreenState extends State<PosScreen> {
                     foregroundColor: Colors.black,
                   ),
                   icon: const Icon(Icons.save, size: 18),
-                  label: const Text('Actualizar Base / Guardar', style: TextStyle(fontWeight: FontWeight.bold)),
+                  label: const Text('Actualizar Base', style: TextStyle(fontWeight: FontWeight.bold)),
                   onPressed: () async {
-                    final nuevoMontoBase = double.tryParse(ctrlMontoInicial.text.trim()) ?? _montoInicialCaja;
+                    final nuevoMontoBase = double.tryParse(ctrlMontoInicial.text.trim()) ?? 0.0;
                     final navigator = Navigator.of(dialogContext);
                     final db = await _dbService.database;
 
-                    // Actualizamos en la base de datos la sesión actual de caja con la nueva base ingresada
                     await db.update(
                       'caja_sesiones',
                       {'monto_inicial': nuevoMontoBase},
@@ -1626,7 +1784,6 @@ class _PosScreenState extends State<PosScreen> {
     }).toList();
 
     final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
-    final logoPath = _configNegocio['logo_path'] ?? '';
 
     return Scaffold(
       backgroundColor: const Color(0xFF0A0F1D),
@@ -1636,41 +1793,6 @@ class _PosScreenState extends State<PosScreen> {
         toolbarHeight: 65,
         title: Row(
           children: [
-            if (logoPath.isNotEmpty && File(logoPath).existsSync())
-              Padding(
-                padding: const EdgeInsets.only(right: 12),
-                child: GestureDetector(
-                  onTap: () => _mostrarLogoAmpliado(logoPath),
-                  child: Container(
-                    width: 52,
-                    height: 52,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: const Color(0xFFFFAB00), width: 2),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.3),
-                          blurRadius: 4,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                    child: ClipOval(
-                      child: Image.file(
-                        File(logoPath),
-                        width: 52,
-                        height: 52,
-                        fit: BoxFit.cover,
-                      ),
-                    ),
-                  ),
-                ),
-              )
-            else
-              const Padding(
-                padding: EdgeInsets.only(right: 8),
-                child: Text('🥟', style: TextStyle(fontSize: 28)),
-              ),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,

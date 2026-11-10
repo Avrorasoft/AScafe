@@ -2,8 +2,12 @@
 
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'services/database_service.dart';
+import 'services/license_service.dart';
 import 'views/pos_screen.dart';
 import 'views/lotes_screen.dart';
 import 'views/admin_inventario_screen.dart';
@@ -47,11 +51,249 @@ class AScafeApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: const MainShellScreen(),
+      home: const VerificadorLicenciaInit(),
     );
   }
 }
 
+// ===========================================================================
+// VERIFICADOR DE LICENCIA INICIAL (BLOQUEO POR HARDWARE & .AV)
+// ===========================================================================
+class VerificadorLicenciaInit extends StatefulWidget {
+  const VerificadorLicenciaInit({super.key});
+
+  @override
+  State<VerificadorLicenciaInit> createState() => _VerificadorLicenciaInitState();
+}
+
+class _VerificadorLicenciaInitState extends State<VerificadorLicenciaInit> {
+  bool _licenciado = false;
+  bool _cargando = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _chequearLicencia();
+  }
+
+  Future<void> _chequearLicencia() async {
+    try {
+      final config = await DatabaseService.instance.obtenerConfiguracionNegocio();
+      String contenidoLicencia = config['serial_activacion']?.toString() ?? '';
+      String uidActual = await LicenseService.instance.obtenerUIDPlacaBase();
+
+      bool esValido = LicenseService.instance.validarLicenciaArchivo(contenidoLicencia, uidActual);
+
+      setState(() {
+        _licenciado = esValido;
+        _cargando = false;
+      });
+    } catch (_) {
+      setState(() {
+        _licenciado = false;
+        _cargando = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_cargando) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0A0F1D),
+        body: Center(child: CircularProgressIndicator(color: Color(0xFFFFAB00))),
+      );
+    }
+
+    if (_licenciado) {
+      return const MainShellScreen();
+    } else {
+      return ActivacionScreen(
+        onLicenciaAceptada: () {
+          setState(() {
+            _licenciado = true;
+          });
+        },
+      );
+    }
+  }
+}
+
+// ===========================================================================
+// PANTALLA DE ACTIVACIÓN Y SOPORTE DE ARCHIVO .AV
+// ===========================================================================
+class ActivacionScreen extends StatefulWidget {
+  final VoidCallback onLicenciaAceptada;
+
+  const ActivacionScreen({super.key, required this.onLicenciaAceptada});
+
+  @override
+  State<ActivacionScreen> createState() => _ActivacionScreenState();
+}
+
+class _ActivacionScreenState extends State<ActivacionScreen> {
+  String _uidHardware = 'Leyendo hardware...';
+  bool _cargandoUid = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _cargarUID();
+  }
+
+  Future<void> _cargarUID() async {
+    String uid = await LicenseService.instance.obtenerUIDPlacaBase();
+    setState(() {
+      _uidHardware = uid;
+      _cargandoUid = false;
+    });
+  }
+
+  Future<void> _enviarWhatsApp() async {
+    const String telefonoEmpresa = '59170000000';
+    String mensaje = Uri.encodeComponent(
+      'Hola, necesito activar el sistema AScafe para mi PC.\nMi UID de placa base es: *$_uidHardware*'
+    );
+    
+    final Uri url = Uri.parse('https://wa.me/$telefonoEmpresa?text=$mensaje');
+    if (await canLaunchUrl(url)) {
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+    }
+  }
+
+  Future<void> _importarArchivoLicencia() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['av'],
+        allowMultiple: false,
+      );
+
+      if (result != null && result.files.single.path != null) {
+        String filePath = result.files.single.path!;
+        File archivo = File(filePath);
+        String contenidoLicencia = await archivo.readAsString();
+
+        bool esValida = LicenseService.instance.validarLicenciaArchivo(contenidoLicencia, _uidHardware);
+
+        if (esValida) {
+          await DatabaseService.instance.guardarConfiguracionNegocio({
+            'serial_activacion': contenidoLicencia.trim(),
+          });
+
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              backgroundColor: Colors.green,
+              content: Text('✅ ¡Licencia .av importada y activada con éxito!'),
+            ),
+          );
+          widget.onLicenciaAceptada();
+        } else {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              backgroundColor: Colors.redAccent,
+              content: Text('❌ El archivo de licencia no es válido o pertenece a otra PC.'),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.redAccent,
+          content: Text('Error al procesar el archivo de licencia: $e'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0F1D),
+      body: Center(
+        child: Container(
+          width: 460,
+          padding: const EdgeInsets.all(28),
+          decoration: BoxDecoration(
+            color: const Color(0xFF0E1626),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFFFAB00), width: 1.5),
+          ),
+          child: _cargandoUid
+              ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFAB00)))
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    const Text('🔒 Activación de Licencia AScafe', style: TextStyle(color: Color(0xFFFFAB00), fontSize: 22, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Este software está vinculado a la placa base de esta PC.',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(color: Colors.grey, fontSize: 13),
+                    ),
+                    const SizedBox(height: 20),
+                    const Text('UID de la Placa Base (Hardware ID):', style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold)),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF131C31),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.white24),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(_uidHardware, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 1.2)),
+                          IconButton(
+                            icon: const Icon(Icons.copy, color: Color(0xFFFFAB00), size: 20),
+                            tooltip: 'Copiar UID',
+                            onPressed: () {
+                              Clipboard.setData(ClipboardData(text: _uidHardware));
+                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('UID copiado al portapapeles')));
+                            },
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.green,
+                        foregroundColor: Colors.white,
+                        minimumSize: const Size(double.infinity, 45),
+                      ),
+                      onPressed: _enviarWhatsApp,
+                      icon: const Icon(Icons.chat),
+                      label: const Text('Enviar UID por WhatsApp', style: TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                    const Divider(color: Colors.white24, height: 30),
+                    ElevatedButton.icon(
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF00E5FF),
+                        foregroundColor: Colors.black,
+                        minimumSize: const Size(double.infinity, 48),
+                      ),
+                      onPressed: _importarArchivoLicencia,
+                      icon: const Icon(Icons.folder_open, size: 20),
+                      label: const Text('Importar Archivo de Licencia (.av)', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+// ===========================================================================
+// MAIN SHELL SCREEN (LOGO GRANDE EN EL NAVEGADOR IZQUIERDO)
+// ===========================================================================
 class MainShellScreen extends StatefulWidget {
   const MainShellScreen({super.key});
 
@@ -62,7 +304,6 @@ class MainShellScreen extends StatefulWidget {
 class MainShellScreenState extends State<MainShellScreen> {
   final DatabaseService _dbService = DatabaseService.instance;
 
-  // Estado de Autenticación Obligatoria
   Map? _usuarioAutenticado;
   List _listaUsuariosLogin = [];
   String _nombreUsuarioSeleccionado = '';
@@ -76,6 +317,8 @@ class MainShellScreenState extends State<MainShellScreen> {
   int _totalCategoriasActivas = 0;
   int _alertasStockBajo = 0;
 
+  String _logoPathConfig = '';
+
   bool get esAdmin => (_usuarioAutenticado?['rol']?.toString() ?? '') == 'admin';
   String get nombreCajeroActivo => _usuarioAutenticado?['nombre']?.toString() ?? 'Cajero';
   String get nombreCajaActiva => _usuarioAutenticado?['nombre_caja']?.toString() ?? 'Caja 1';
@@ -85,6 +328,7 @@ class MainShellScreenState extends State<MainShellScreen> {
   void initState() {
     super.initState();
     _cargarUsuariosParaLogin();
+    _cargarConfiguracionLogo();
     actualizarMetricasGlobales();
   }
 
@@ -92,6 +336,17 @@ class MainShellScreenState extends State<MainShellScreen> {
   void dispose() {
     _ctrlPasswordLogin.dispose();
     super.dispose();
+  }
+
+  Future<void> _cargarConfiguracionLogo() async {
+    try {
+      final config = await _dbService.obtenerConfiguracionNegocio();
+      if (mounted) {
+        setState(() {
+          _logoPathConfig = config['logo_path']?.toString() ?? '';
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _cargarUsuariosParaLogin() async {
@@ -136,6 +391,7 @@ class MainShellScreenState extends State<MainShellScreen> {
         _indiceSeleccionado = 0;
         _ctrlPasswordLogin.clear();
       });
+      await _cargarConfiguracionLogo();
       await actualizarMetricasGlobales();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -385,7 +641,6 @@ class MainShellScreenState extends State<MainShellScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Bloqueo estricto: Si no hay sesión autenticada, solo se muestra el Login
     if (_usuarioAutenticado == null) {
       return _construirPantallaLoginObligatorio();
     }
@@ -432,69 +687,110 @@ class MainShellScreenState extends State<MainShellScreen> {
             ),
             child: Column(
               children: [
+                // ===========================================================
+                // CABECERA DEL MENÚ LATERAL CON LOGO GRANDE (96px, 1:1)
+                // ===========================================================
                 Container(
-                  width: _menuExpandido ? 220 : 72,
-                  padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 12),
+                  width: _menuExpandido ? 240 : 84,
+                  padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
                   decoration: const BoxDecoration(
                     color: Color(0xFF131C31),
                     border: Border(
                       bottom: BorderSide(color: Colors.white12, width: 1),
                     ),
                   ),
-                  child: Row(
-                    mainAxisAlignment:
-                        _menuExpandido ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
+                  child: Column(
                     children: [
-                      if (_menuExpandido)
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '🖥️ $nombreCajaActiva',
-                                style: const TextStyle(
-                                  color: Color(0xFFFFAB00),
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 14,
+                      Row(
+                        mainAxisAlignment:
+                            _menuExpandido ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
+                        children: [
+                          // LOGO AMPLIADO EN EL NAVEGADOR VERTICAL IZQUIERDO (96px)
+                          Container(
+                            width: 96,
+                            height: 96,
+                            decoration: BoxDecoration(
+                              shape: BoxShape.circle,
+                              border: Border.all(color: const Color(0xFFFFAB00), width: 3.5),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: Colors.black.withOpacity(0.5),
+                                  blurRadius: 6,
+                                  offset: const Offset(0, 3),
                                 ),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                '👤 $nombreCajeroActivo (${esAdmin ? "Admin" : "Cajero"})',
-                                style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                            ],
+                              ],
+                            ),
+                            child: ClipOval(
+                              child: _logoPathConfig.isNotEmpty && File(_logoPathConfig).existsSync()
+                                  ? Image.file(
+                                      File(_logoPathConfig),
+                                      width: 96,
+                                      height: 96,
+                                      fit: BoxFit.cover,
+                                    )
+                                  : Container(
+                                      color: const Color(0xFF0A0F1D),
+                                      child: const Icon(Icons.store, color: Color(0xFFFFAB00), size: 48),
+                                    ),
+                            ),
+                          ),
+                          IconButton(
+                            icon: Icon(
+                              _menuExpandido ? Icons.menu_open : Icons.menu,
+                              color: const Color(0xFF00E5FF),
+                              size: 26,
+                            ),
+                            onPressed: () {
+                              setState(() {
+                                _menuExpandido = !_menuExpandido;
+                              });
+                            },
+                          ),
+                        ],
+                      ),
+                      if (_menuExpandido) ...[
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '🖥️ $nombreCajaActiva',
+                            style: const TextStyle(
+                              color: Color(0xFFFFAB00),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
-                      IconButton(
-                        icon: Icon(
-                          _menuExpandido ? Icons.menu_open : Icons.menu,
-                          color: const Color(0xFF00E5FF),
+                        const SizedBox(height: 3),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            '👤 $nombreCajeroActivo (${esAdmin ? "Admin" : "Cajero"})',
+                            style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                            overflow: TextOverflow.ellipsis,
+                          ),
                         ),
-                        onPressed: () {
-                          setState(() {
-                            _menuExpandido = !_menuExpandido;
-                          });
-                        },
-                      ),
+                      ],
                     ],
                   ),
                 ),
+                // ===========================================================
+                // NAVEGACIÓN VERTICAL DESPLAZADA HACIA ABAJO
+                // ===========================================================
                 Expanded(
                   child: NavigationRail(
                     extended: _menuExpandido,
-                    minExtendedWidth: 220,
-                    minWidth: 72,
+                    minExtendedWidth: 240,
+                    minWidth: 84,
                     backgroundColor: const Color(0xFF0E1626),
                     selectedIndex: _indiceSeleccionado >= destinosPermitidos.length ? 0 : _indiceSeleccionado,
-                    selectedIconTheme: const IconThemeData(color: Color(0xFFFFAB00), size: 26),
-                    unselectedIconTheme: const IconThemeData(color: Colors.white60, size: 22),
+                    selectedIconTheme: const IconThemeData(color: Color(0xFFFFAB00), size: 28),
+                    unselectedIconTheme: const IconThemeData(color: Colors.white60, size: 24),
                     selectedLabelTextStyle: const TextStyle(
                       color: Color(0xFFFFAB00),
                       fontWeight: FontWeight.bold,
-                      fontSize: 13,
+                      fontSize: 14,
                     ),
                     unselectedLabelTextStyle: const TextStyle(
                       color: Colors.white70,
@@ -506,23 +802,23 @@ class MainShellScreenState extends State<MainShellScreen> {
                 ),
                 if (_menuExpandido)
                   Padding(
-                    padding: const EdgeInsets.all(10),
+                    padding: const EdgeInsets.all(12),
                     child: ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
                         backgroundColor: Colors.redAccent.withOpacity(0.85),
                         foregroundColor: Colors.white,
-                        minimumSize: const Size(195, 42),
+                        minimumSize: const Size(216, 44),
                       ),
                       onPressed: cerrarSesion,
                       icon: const Icon(Icons.logout, size: 18),
-                      label: const Text('Cambiar Cajero / Salir', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+                      label: const Text('Cambiar Cajero / Salir', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                     ),
                   )
                 else
                   Padding(
-                    padding: const EdgeInsets.only(bottom: 12),
+                    padding: const EdgeInsets.only(bottom: 14),
                     child: IconButton(
-                      icon: const Icon(Icons.logout, color: Colors.redAccent),
+                      icon: const Icon(Icons.logout, color: Colors.redAccent, size: 26),
                       tooltip: 'Cerrar Sesión',
                       onPressed: cerrarSesion,
                     ),
