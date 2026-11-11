@@ -1,16 +1,18 @@
 // Nombre del archivo: main.dart
-
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'constants.dart';
 import 'services/database_service.dart';
 import 'services/license_service.dart';
 import 'views/pos_screen.dart';
 import 'views/lotes_screen.dart';
 import 'views/admin_inventario_screen.dart';
+
+final ValueNotifier<String> globalLogoNotifier = ValueNotifier<String>('');
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -22,6 +24,8 @@ Future<void> main() async {
 
   try {
     await DatabaseService.instance.database;
+    final config = await DatabaseService.instance.obtenerConfiguracionNegocio();
+    globalLogoNotifier.value = config['logo_path']?.toString() ?? '';
   } catch (_) {}
 
   runApp(const AScafeApp());
@@ -33,7 +37,7 @@ class AScafeApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AScafe - Sistema POS & Control de Producción',
+      title: '${AppConstants.empresaNombre} - AScafe POS & Control de Producción',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         brightness: Brightness.dark,
@@ -56,9 +60,6 @@ class AScafeApp extends StatelessWidget {
   }
 }
 
-// ===========================================================================
-// VERIFICADOR DE LICENCIA INICIAL (BLOQUEO POR HARDWARE & .AV)
-// ===========================================================================
 class VerificadorLicenciaInit extends StatefulWidget {
   const VerificadorLicenciaInit({super.key});
 
@@ -119,9 +120,6 @@ class _VerificadorLicenciaInitState extends State<VerificadorLicenciaInit> {
   }
 }
 
-// ===========================================================================
-// PANTALLA DE ACTIVACIÓN Y SOPORTE DE ARCHIVO .AV
-// ===========================================================================
 class ActivacionScreen extends StatefulWidget {
   final VoidCallback onLicenciaAceptada;
 
@@ -150,9 +148,9 @@ class _ActivacionScreenState extends State<ActivacionScreen> {
   }
 
   Future<void> _enviarWhatsApp() async {
-    const String telefonoEmpresa = '59170000000';
+    const String telefonoEmpresa = '59173995224';
     String mensaje = Uri.encodeComponent(
-      'Hola, necesito activar el sistema AScafe para mi PC.\nMi UID de placa base es: *$_uidHardware*'
+      'Hola, necesito activar el sistema AScafe de ${AppConstants.empresaNombre}.\nMi UID de placa base es: *$_uidHardware*'
     );
     
     final Uri url = Uri.parse('https://wa.me/$telefonoEmpresa?text=$mensaje');
@@ -216,7 +214,7 @@ class _ActivacionScreenState extends State<ActivacionScreen> {
       backgroundColor: const Color(0xFF0A0F1D),
       body: Center(
         child: Container(
-          width: 460,
+          width: 480,
           padding: const EdgeInsets.all(28),
           decoration: BoxDecoration(
             color: const Color(0xFF0E1626),
@@ -229,15 +227,26 @@ class _ActivacionScreenState extends State<ActivacionScreen> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    const Text('🔒 Activación de Licencia AScafe', style: TextStyle(color: Color(0xFFFFAB00), fontSize: 22, fontWeight: FontWeight.bold)),
+                    const Text(
+                      '🔒 Activación de Licencia - AScafe',
+                      style: TextStyle(color: Color(0xFFFFAB00), fontSize: 20, fontWeight: FontWeight.bold),
+                    ),
+                    const SizedBox(height: 6),
+                    const Text(
+                      AppConstants.empresaNombre,
+                      style: TextStyle(color: Color(0xFF00E5FF), fontSize: 13, fontWeight: FontWeight.bold),
+                    ),
                     const SizedBox(height: 10),
                     const Text(
-                      'Este software está vinculado a la placa base de esta PC.',
+                      'Este sistema está vinculado al hardware de su PC. Copie su UID o envíelo por WhatsApp para obtener su archivo license.av.',
                       textAlign: TextAlign.center,
                       style: TextStyle(color: Colors.grey, fontSize: 13),
                     ),
                     const SizedBox(height: 20),
-                    const Text('UID de la Placa Base (Hardware ID):', style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold)),
+                    const Align(
+                      alignment: Alignment.centerLeft,
+                      child: Text('UID de la Placa Base (Hardware ID):', style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold)),
+                    ),
                     const SizedBox(height: 6),
                     Container(
                       padding: const EdgeInsets.all(12),
@@ -249,13 +258,23 @@ class _ActivacionScreenState extends State<ActivacionScreen> {
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          Text(_uidHardware, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15, letterSpacing: 1.2)),
+                          Expanded(
+                            child: Text(
+                              _uidHardware,
+                              style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14, letterSpacing: 1.1),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
                           IconButton(
                             icon: const Icon(Icons.copy, color: Color(0xFFFFAB00), size: 20),
                             tooltip: 'Copiar UID',
                             onPressed: () {
                               Clipboard.setData(ClipboardData(text: _uidHardware));
-                              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('UID copiado al portapapeles')));
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(
+                                  content: Text('UID copiado al portapapeles'),
+                                ),
+                              );
                             },
                           ),
                         ],
@@ -270,7 +289,7 @@ class _ActivacionScreenState extends State<ActivacionScreen> {
                       ),
                       onPressed: _enviarWhatsApp,
                       icon: const Icon(Icons.chat),
-                      label: const Text('Enviar UID por WhatsApp', style: TextStyle(fontWeight: FontWeight.bold)),
+                      label: const Text('Enviar UID por WhatsApp (+591 73995224)', style: TextStyle(fontWeight: FontWeight.bold)),
                     ),
                     const Divider(color: Colors.white24, height: 30),
                     ElevatedButton.icon(
@@ -291,9 +310,6 @@ class _ActivacionScreenState extends State<ActivacionScreen> {
   }
 }
 
-// ===========================================================================
-// MAIN SHELL SCREEN (LOGO GRANDE EN EL NAVEGADOR IZQUIERDO)
-// ===========================================================================
 class MainShellScreen extends StatefulWidget {
   const MainShellScreen({super.key});
 
@@ -317,8 +333,6 @@ class MainShellScreenState extends State<MainShellScreen> {
   int _totalCategoriasActivas = 0;
   int _alertasStockBajo = 0;
 
-  String _logoPathConfig = '';
-
   bool get esAdmin => (_usuarioAutenticado?['rol']?.toString() ?? '') == 'admin';
   String get nombreCajeroActivo => _usuarioAutenticado?['nombre']?.toString() ?? 'Cajero';
   String get nombreCajaActiva => _usuarioAutenticado?['nombre_caja']?.toString() ?? 'Caja 1';
@@ -330,6 +344,7 @@ class MainShellScreenState extends State<MainShellScreen> {
     _cargarUsuariosParaLogin();
     _cargarConfiguracionLogo();
     actualizarMetricasGlobales();
+    _verificarAlertaExpiracion();
   }
 
   @override
@@ -338,15 +353,39 @@ class MainShellScreenState extends State<MainShellScreen> {
     super.dispose();
   }
 
+  Future<void> _verificarAlertaExpiracion() async {
+    try {
+      final config = await _dbService.obtenerConfiguracionNegocio();
+      String contenidoLicencia = config['serial_activacion']?.toString() ?? '';
+      final detalles = LicenseService.instance.obtenerDetallesLicencia(contenidoLicencia);
+      
+      if (detalles != null) {
+        final expiracion = detalles['expiracion']?.toString() ?? '';
+        int diasRestantes = LicenseService.instance.calcularDiasRestantes(expiracion);
+        
+        if (diasRestantes <= 15 && diasRestantes >= 0) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: Colors.orangeAccent,
+              duration: const Duration(seconds: 8),
+              content: Text('⚠️ Su licencia vence en $diasRestantes días. Contacte a soporte para su renovación.'),
+            ),
+          );
+        }
+      }
+    } catch (_) {}
+  }
+
   Future<void> _cargarConfiguracionLogo() async {
     try {
       final config = await _dbService.obtenerConfiguracionNegocio();
-      if (mounted) {
-        setState(() {
-          _logoPathConfig = config['logo_path']?.toString() ?? '';
-        });
-      }
+      globalLogoNotifier.value = config['logo_path']?.toString() ?? '';
     } catch (_) {}
+  }
+
+  Future<void> forzarActualizacionLogo() async {
+    await _cargarConfiguracionLogo();
   }
 
   Future<void> _cargarUsuariosParaLogin() async {
@@ -393,6 +432,7 @@ class MainShellScreenState extends State<MainShellScreen> {
       });
       await _cargarConfiguracionLogo();
       await actualizarMetricasGlobales();
+      await _verificarAlertaExpiracion();
     } else {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -687,9 +727,6 @@ class MainShellScreenState extends State<MainShellScreen> {
             ),
             child: Column(
               children: [
-                // ===========================================================
-                // CABECERA DEL MENÚ LATERAL CON LOGO GRANDE (96px, 1:1)
-                // ===========================================================
                 Container(
                   width: _menuExpandido ? 240 : 84,
                   padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
@@ -705,34 +742,40 @@ class MainShellScreenState extends State<MainShellScreen> {
                         mainAxisAlignment:
                             _menuExpandido ? MainAxisAlignment.spaceBetween : MainAxisAlignment.center,
                         children: [
-                          // LOGO AMPLIADO EN EL NAVEGADOR VERTICAL IZQUIERDO (96px)
-                          Container(
-                            width: 96,
-                            height: 96,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              border: Border.all(color: const Color(0xFFFFAB00), width: 3.5),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: Colors.black.withOpacity(0.5),
-                                  blurRadius: 6,
-                                  offset: const Offset(0, 3),
-                                ),
-                              ],
-                            ),
-                            child: ClipOval(
-                              child: _logoPathConfig.isNotEmpty && File(_logoPathConfig).existsSync()
-                                  ? Image.file(
-                                      File(_logoPathConfig),
-                                      width: 96,
-                                      height: 96,
-                                      fit: BoxFit.cover,
-                                    )
-                                  : Container(
-                                      color: const Color(0xFF0A0F1D),
-                                      child: const Icon(Icons.store, color: Color(0xFFFFAB00), size: 48),
+                          ValueListenableBuilder<String>(
+                            valueListenable: globalLogoNotifier,
+                            builder: (context, logoPath, _) {
+                              return Container(
+                                width: 88,
+                                height: 88,
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF0A0F1D),
+                                  borderRadius: BorderRadius.circular(16),
+                                  border: Border.all(color: const Color(0xFFFFAB00), width: 2.5),
+                                  boxShadow: [
+                                    BoxShadow(
+                                      color: Colors.black.withOpacity(0.4),
+                                      blurRadius: 6,
+                                      offset: const Offset(0, 3),
                                     ),
-                            ),
+                                  ],
+                                ),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(14),
+                                  child: logoPath.isNotEmpty && File(logoPath).existsSync()
+                                      ? Image.file(
+                                          File(logoPath),
+                                          width: 88,
+                                          height: 88,
+                                          fit: BoxFit.cover,
+                                        )
+                                      : Container(
+                                          color: const Color(0xFF0A0F1D),
+                                          child: const Icon(Icons.store, color: Color(0xFFFFAB00), size: 42),
+                                        ),
+                                ),
+                              );
+                            },
                           ),
                           IconButton(
                             icon: Icon(
@@ -750,11 +793,11 @@ class MainShellScreenState extends State<MainShellScreen> {
                       ),
                       if (_menuExpandido) ...[
                         const SizedBox(height: 12),
-                        Align(
+                        const Align(
                           alignment: Alignment.centerLeft,
                           child: Text(
-                            '🖥️ $nombreCajaActiva',
-                            style: const TextStyle(
+                            '🖥️ Caja 1',
+                            style: TextStyle(
                               color: Color(0xFFFFAB00),
                               fontWeight: FontWeight.bold,
                               fontSize: 14,
@@ -771,13 +814,19 @@ class MainShellScreenState extends State<MainShellScreen> {
                             overflow: TextOverflow.ellipsis,
                           ),
                         ),
+                        const SizedBox(height: 4),
+                        const Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            AppConstants.empresaNombre,
+                            style: TextStyle(color: Colors.white54, fontSize: 10, fontStyle: FontStyle.italic),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
                       ],
                     ],
                   ),
                 ),
-                // ===========================================================
-                // NAVEGACIÓN VERTICAL DESPLAZADA HACIA ABAJO
-                // ===========================================================
                 Expanded(
                   child: NavigationRail(
                     extended: _menuExpandido,

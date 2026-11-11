@@ -1,4 +1,4 @@
-// Nombre del archivo: pos_screen.dart
+// Nombre del archivo: lib/views/pos_screen.dart
 
 import 'dart:async';
 import 'dart:convert';
@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
 import 'admin_inventario_screen.dart';
+import '../main.dart';
 
 class ItemCatalogo {
   final int id;
@@ -166,13 +167,25 @@ class _PosScreenState extends State<PosScreen> {
   }
 
   Future<void> _inicializarSistemaPOS() async {
-    final conf = await _dbService.obtenerConfiguracionNegocio();
-    setState(() {
-      _configNegocio = conf;
-    });
-    await _verificarEstadoCajaSQLite();
-    await _cargarDatosDesdeSQLite();
-    await _calcularResumenVentasTurno();
+    try {
+      final rawConf = await _dbService.obtenerConfiguracionNegocio();
+      final Map<String, String> conf = {};
+      if (rawConf is Map) {
+        rawConf.forEach((key, value) {
+          conf[key.toString()] = value?.toString() ?? '';
+        });
+      }
+
+      setState(() {
+        _configNegocio = conf;
+      });
+      globalLogoNotifier.value = conf['logo_path']?.toString() ?? '';
+      await _verificarEstadoCajaSQLite();
+      await _cargarDatosDesdeSQLite();
+      await _calcularResumenVentasTurno();
+    } catch (e) {
+      debugPrint('Error al inicializar sistema POS: $e');
+    }
   }
 
   String _obtenerEmojiCategoria(String categoria) {
@@ -235,14 +248,14 @@ class _PosScreenState extends State<PosScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           backgroundColor: Colors.redAccent,
-          content: Text('🔒 Permiso denegado: Solo el Administrador puede modificar los datos y el logo del negocio.'),
+          content: Text('🔒 Permiso denegado: Solo el Administrador puede modificar los datos y el logo del establecimiento.'),
         ),
       );
       return;
     }
 
-    final ctrlNombre = TextEditingController(text: _configNegocio['nombre_negocio'] ?? 'AScafe');
-    final ctrlDireccion = TextEditingController(text: _configNegocio['direccion_negocio'] ?? 'Riberalta, Beni - Bolivia');
+    final ctrlNombre = TextEditingController(text: _configNegocio['nombre_negocio'] ?? 'Establecimiento');
+    final ctrlDireccion = TextEditingController(text: _configNegocio['direccion_negocio'] ?? 'Dirección');
     final ctrlCelular = TextEditingController(text: _configNegocio['celular_negocio'] ?? '+591 70000000');
     final ctrlLogoPath = TextEditingController(text: _configNegocio['logo_path'] ?? '');
 
@@ -295,7 +308,7 @@ class _PosScreenState extends State<PosScreen> {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       const Text(
-                        'Previsualización del Logo Grande:',
+                        'Previsualización del Logo:',
                         style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 10),
@@ -304,10 +317,11 @@ class _PosScreenState extends State<PosScreen> {
                         height: 70,
                         decoration: BoxDecoration(
                           color: const Color(0xFF131C31),
-                          shape: BoxShape.circle,
-                          border: Border.all(color: const Color(0xFFFFAB00), width: 3),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFFFAB00), width: 2),
                         ),
-                        child: ClipOval(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(10),
                           child: ctrlLogoPath.text.isNotEmpty && File(ctrlLogoPath.text).existsSync()
                               ? Image.file(
                                   File(ctrlLogoPath.text),
@@ -315,7 +329,7 @@ class _PosScreenState extends State<PosScreen> {
                                   width: 70,
                                   height: 70,
                                 )
-                              : const Icon(Icons.store, size: 60, color: Colors.grey),
+                              : const Icon(Icons.store, size: 40, color: Colors.grey),
                         ),
                       ),
                       const SizedBox(height: 14),
@@ -393,6 +407,34 @@ class _PosScreenState extends State<PosScreen> {
                   onPressed: () => Navigator.of(dialogContext).pop(),
                   child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
                 ),
+                TextButton.icon(
+                  style: TextButton.styleFrom(foregroundColor: Colors.redAccent),
+                  icon: const Icon(Icons.restore, size: 16),
+                  label: const Text('Volver a Fábrica'),
+                  onPressed: () async {
+                    final navigator = Navigator.of(dialogContext);
+                    final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+                    await _dbService.guardarConfiguracionNegocio({
+                      'nombre_negocio': 'Establecimiento',
+                      'direccion_negocio': 'Dirección',
+                      'celular_negocio': '+591 70000000',
+                      'logo_path': '',
+                    });
+
+                    globalLogoNotifier.value = '';
+                    navigator.pop();
+                    await _inicializarSistemaPOS();
+
+                    if (!mounted) return;
+                    scaffoldMessenger.showSnackBar(
+                      const SnackBar(
+                        backgroundColor: Colors.orangeAccent,
+                        content: Text('🔄 Sistema restaurado a fábrica.'),
+                      ),
+                    );
+                  },
+                ),
                 ElevatedButton.icon(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFFFFAB00),
@@ -403,14 +445,16 @@ class _PosScreenState extends State<PosScreen> {
                   onPressed: () async {
                     final navigator = Navigator.of(dialogContext);
                     final scaffoldMessenger = ScaffoldMessenger.of(context);
+                    final nuevoLogo = ctrlLogoPath.text.trim();
 
                     await _dbService.guardarConfiguracionNegocio({
                       'nombre_negocio': ctrlNombre.text.trim(),
                       'direccion_negocio': ctrlDireccion.text.trim(),
                       'celular_negocio': ctrlCelular.text.trim(),
-                      'logo_path': ctrlLogoPath.text.trim(),
+                      'logo_path': nuevoLogo,
                     });
 
+                    globalLogoNotifier.value = nuevoLogo;
                     navigator.pop();
                     await _inicializarSistemaPOS();
 
@@ -2426,7 +2470,7 @@ class _PosScreenState extends State<PosScreen> {
                       minimumSize: const Size(double.infinity, 48),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     ),
-                    onPressed: _procesarPago,
+                    onPressed: _procesarPago, // 👈 Aquí se enlaza correctamente la función
                     icon: const Icon(Icons.picture_as_pdf, size: 20),
                     label: const Text(
                       'COBRAR E IMPRIMIR RECIBO PDF',

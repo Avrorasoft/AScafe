@@ -135,7 +135,7 @@ bool Win32Window::Create(const std::wstring& title,
   double scale_factor = dpi / 96.0;
 
   HWND window = CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
+      window_class, L"AScafe", WS_OVERLAPPEDWINDOW,
       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
       nullptr, nullptr, GetModuleHandle(nullptr), this);
@@ -155,9 +155,9 @@ bool Win32Window::Show() {
 
 // static
 LRESULT CALLBACK Win32Window::WndProc(HWND const window,
-                                      UINT const message,
-                                      WPARAM const wparam,
-                                      LPARAM const lparam) noexcept {
+                                     UINT const message,
+                                     WPARAM const wparam,
+                                     LPARAM const lparam) noexcept {
   if (message == WM_NCCREATE) {
     auto window_struct = reinterpret_cast<CREATESTRUCT*>(lparam);
     SetWindowLongPtr(window, GWLP_USERDATA,
