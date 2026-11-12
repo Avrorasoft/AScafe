@@ -166,7 +166,7 @@ class _PosScreenState extends State<PosScreen> {
     }
   }
 
-  Future<void> _inicializarSistemaPOS() async {
+Future<void> _inicializarSistemaPOS() async {
     try {
       final rawConf = await _dbService.obtenerConfiguracionNegocio();
       final Map<String, String> conf = {};
@@ -243,7 +243,7 @@ class _PosScreenState extends State<PosScreen> {
     return '🥟';
   }
 
-  void _mostrarDialogoConfiguracionNegocio() {
+void _mostrarDialogoConfiguracionNegocio() {
     if (!_esAdminActivo) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -333,34 +333,39 @@ class _PosScreenState extends State<PosScreen> {
                         ),
                       ),
                       const SizedBox(height: 14),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: TextField(
-                              controller: ctrlLogoPath,
-                              readOnly: true,
-                              style: const TextStyle(color: Colors.white, fontSize: 12),
-                              decoration: InputDecoration(
-                                labelText: 'Archivo de Logo Seleccionado',
-                                labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
-                                filled: true,
-                                fillColor: const Color(0xFF131C31),
-                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        child: Row(
+                          children: [
+                            SizedBox(
+                              width: 320,
+                              child: TextField(
+                                controller: ctrlLogoPath,
+                                readOnly: true,
+                                style: const TextStyle(color: Colors.white, fontSize: 12),
+                                decoration: InputDecoration(
+                                  labelText: 'Archivo de Logo Seleccionado',
+                                  labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                                  filled: true,
+                                  fillColor: const Color(0xFF131C31),
+                                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                                ),
                               ),
                             ),
-                          ),
-                          const SizedBox(width: 8),
-                          ElevatedButton.icon(
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color(0xFFFFAB00),
-                              foregroundColor: Colors.black,
-                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                            const SizedBox(width: 8),
+                            ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: const Color(0xFFFFAB00),
+                                foregroundColor: Colors.black,
+                                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+                              ),
+                              onPressed: seleccionarLogoGrafico,
+                              icon: const Icon(Icons.folder_open, size: 16),
+                              label: const Text('Examinar...', style: TextStyle(fontWeight: FontWeight.bold)),
                             ),
-                            onPressed: seleccionarLogoGrafico,
-                            icon: const Icon(Icons.folder_open, size: 16),
-                            label: const Text('Examinar...', style: TextStyle(fontWeight: FontWeight.bold)),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
                       const SizedBox(height: 16),
                       TextField(
@@ -415,12 +420,7 @@ class _PosScreenState extends State<PosScreen> {
                     final navigator = Navigator.of(dialogContext);
                     final scaffoldMessenger = ScaffoldMessenger.of(context);
 
-                    await _dbService.guardarConfiguracionNegocio({
-                      'nombre_negocio': 'Establecimiento',
-                      'direccion_negocio': 'Dirección',
-                      'celular_negocio': '+591 70000000',
-                      'logo_path': '',
-                    });
+                    await _dbService.restaurarValoresDeFabrica();
 
                     globalLogoNotifier.value = '';
                     navigator.pop();
@@ -743,7 +743,180 @@ class _PosScreenState extends State<PosScreen> {
       );
     }
   }
+Future<void> _generarInformeGeneralCajaPdf() async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final db = await _dbService.database;
+      
+      final rawConf = await _dbService.obtenerConfiguracionNegocio();
+      final Map<String, String> conf = {};
+      if (rawConf is Map) {
+        rawConf.forEach((key, value) {
+          conf[key.toString()] = value?.toString() ?? '';
+        });
+      }
 
+      final nombreNeg = conf['nombre_negocio']?.isNotEmpty == true ? conf['nombre_negocio']! : (_configNegocio['nombre_negocio'] ?? 'AScafe');
+      final dirNeg = conf['direccion_negocio']?.isNotEmpty == true ? conf['direccion_negocio']! : (_configNegocio['direccion_negocio'] ?? 'Riberalta, Beni - Bolivia');
+      final celNeg = conf['celular_negocio']?.isNotEmpty == true ? conf['celular_negocio']! : (_configNegocio['celular_negocio'] ?? '+591 70000000');
+
+      final List todasLasVentas = await db.query('ventas');
+      final List sesionesCaja = await db.query('caja_sesiones', orderBy: 'id DESC', limit: 5);
+
+      final List<String> lineas = [];
+      // Línea divisoria acortada de 38 a 34 caracteres
+      const String div = '----------------------------------';
+      
+      lineas.add('==================================');
+      lineas.add('    INFORME DE CAJA Y VENTAS     ');
+      lineas.add('       ${_limpiarTextoPdf(nombreNeg).toUpperCase()}        ');
+      if (dirNeg.isNotEmpty) lineas.add('  ${_limpiarTextoPdf(dirNeg)}  ');
+      if (celNeg.isNotEmpty) lineas.add('  Celular: ${_limpiarTextoPdf(celNeg)}  ');
+      lineas.add('==================================');
+      lineas.add('FECHA REPORTE: $_fechaActual');
+      lineas.add(div);
+      lineas.add('RESUMEN FINANCIERO GENERAL:');
+      
+      double totalGeneral = 0.0;
+      double efectivoGeneral = 0.0;
+      double qrGeneral = 0.0;
+
+      final Map<String, Map<String, dynamic>> resumenPorCajero = {};
+
+      for (final v in todasLasVentas) {
+        final m = v as Map;
+        final t = (m['total'] as num?)?.toDouble() ?? 0.0;
+        final met = m['metodo_pago']?.toString() ?? 'Efectivo';
+        final cajero = m['cajero_nombre']?.toString() ?? 'Administrador';
+
+        totalGeneral += t;
+        if (met.toUpperCase().contains('QR')) {
+          qrGeneral += t;
+        } else {
+          efectivoGeneral += t;
+        }
+
+        if (!resumenPorCajero.containsKey(cajero)) {
+          resumenPorCajero[cajero] = {
+            'ventas': 0,
+            'total': 0.0,
+            'efectivo': 0.0,
+            'qr': 0.0,
+          };
+        }
+        resumenPorCajero[cajero]!['ventas'] += 1;
+        resumenPorCajero[cajero]!['total'] += t;
+        if (met.toUpperCase().contains('QR')) {
+          resumenPorCajero[cajero]!['qr'] += t;
+        } else {
+          resumenPorCajero[cajero]!['efectivo'] += t;
+        }
+      }
+
+      lineas.add('- Ventas Acum: Bs. ${totalGeneral.toStringAsFixed(2)}');
+      lineas.add('- Efectivo Caja: Bs. ${efectivoGeneral.toStringAsFixed(2)}');
+      lineas.add('- Pagos QR: Bs. ${qrGeneral.toStringAsFixed(2)}');
+      lineas.add('- Transacciones: ${todasLasVentas.length} ventas');
+      lineas.add(div);
+      lineas.add('ULTIMAS SESIONES Y ARQUEOS:');
+
+      if (sesionesCaja.isEmpty) {
+        lineas.add('No hay sesiones registradas.');
+      } else {
+        for (final s in sesionesCaja) {
+          final sm = s as Map;
+          final idS = sm['id'] ?? 0;
+          final nomCaja = sm['nombre_caja'] ?? 'Caja 1 - Principal';
+          final nomCajero = sm['cajero'] ?? 'Administrador';
+          final estado = sm['estado'] ?? 'Abierta';
+          final base = (sm['monto_inicial'] as num?)?.toDouble() ?? 0.0;
+          final finalArqueo = (sm['monto_final'] as num?)?.toDouble() ?? 0.0;
+
+          // Se divide en dos líneas para evitar recorte en el margen derecho
+          lineas.add('Turno #$idS | $nomCaja');
+          lineas.add('  Cajero: $nomCajero | Estado: $estado');
+          lineas.add('  Base: Bs.${base.toStringAsFixed(1)} | Final: Bs.${finalArqueo.toStringAsFixed(1)}');
+          lineas.add(div);
+        }
+      }
+
+      lineas.add('RECAUDACION DETALLADA POR CAJERO:');
+      if (resumenPorCajero.isEmpty) {
+        lineas.add('No hay ventas registradas.');
+      } else {
+        resumenPorCajero.forEach((cajero, datos) {
+          lineas.add(div);
+          lineas.add('CAJERO: ${_limpiarTextoPdf(cajero)}');
+          lineas.add(' - Ventas: ${datos['ventas']}');
+          lineas.add(' - Total Recaudado: Bs. ${(datos['total'] as double).toStringAsFixed(2)}');
+          lineas.add('   * Efectivo: Bs. ${(datos['efectivo'] as double).toStringAsFixed(2)}');
+          lineas.add('   * Pagos QR: Bs. ${(datos['qr'] as double).toStringAsFixed(2)}');
+        });
+      }
+
+      lineas.add('==================================');
+      lineas.add(' DOCUMENTO OFICIAL DE CONTROL GENERAL ');
+
+      // Se reduce la fuente a 6 puntos para ganar espacio horizontal
+      final int altoPagina = 200 + (lineas.length * 11); // Espaciado vertical reducido
+      final StringBuffer contenidoStream = StringBuffer();
+      contenidoStream.writeln('BT');
+      contenidoStream.writeln('/F1 6 Tf'); // FUENTE REDUCIDA A 6 PUNTOS
+      int yPos = altoPagina - 20;
+      for (final l in lineas) {
+        // Se mantiene el margen izquierdo en 12, el Courier de 6pt cabe en 226px
+        contenidoStream.writeln('12 $yPos Td');
+        contenidoStream.writeln('($l) Tj');
+        contenidoStream.writeln('-12 -$yPos Td');
+        yPos -= 10; // Espaciado entre líneas reducido
+      }
+      contenidoStream.writeln('ET');
+
+      final String streamStr = contenidoStream.toString();
+      final List<String> objetos = [
+        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
+        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
+        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 226 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
+        '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
+        '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
+      ];
+
+      final StringBuffer pdfBuffer = StringBuffer();
+      pdfBuffer.write('%PDF-1.4\n');
+      final List<int> offsets = [];
+      for (final obj in objetos) {
+        offsets.add(pdfBuffer.toString().length);
+        pdfBuffer.write(obj);
+      }
+      final int xrefStart = pdfBuffer.toString().length;
+      pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
+      pdfBuffer.write('0000000000 65535 f \n');
+      for (final off in offsets) {
+        pdfBuffer.write('${off.toString().padLeft(10, '0')} 00000 n \n');
+      }
+      pdfBuffer.write('trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\n');
+      pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
+
+      final dirTemp = Directory.systemTemp;
+      final rutaPdf = p.join(dirTemp.path, 'informe_general_caja_${DateTime.now().millisecondsSinceEpoch}.pdf');
+      await File(rutaPdf).writeAsBytes(latin1.encode(pdfBuffer.toString()), flush: true);
+
+      if (Platform.isWindows) {
+        await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
+      }
+
+      messenger.showSnackBar(
+        SnackBar(
+          backgroundColor: Colors.green,
+          content: Text('📄 Informe general generado correctamente: $rutaPdf'),
+        ),
+      );
+    } catch (e) {
+      messenger.showSnackBar(
+        SnackBar(backgroundColor: Colors.redAccent, content: Text('Error al generar informe general PDF: $e')),
+      );
+    }
+  }
   Future<void> _verificarEstadoCajaSQLite() async {
     try {
       final db = await _dbService.database;
@@ -1611,7 +1784,7 @@ class _PosScreenState extends State<PosScreen> {
     );
   }
 
-  void _mostrarDialogoControlCaja() {
+void _mostrarDialogoControlCaja() {
     final ctrlMontoInicial = TextEditingController(text: _montoInicialCaja.toStringAsFixed(2));
     final aperturaCorta = _fechaAperturaCaja.isNotEmpty
         ? _fechaAperturaCaja.split('T').first
@@ -1734,6 +1907,22 @@ class _PosScreenState extends State<PosScreen> {
                           },
                           icon: const Icon(Icons.picture_as_pdf, size: 18),
                           label: const Text('Imprimir Mi Informe Individual (PDF)', style: TextStyle(fontWeight: FontWeight.bold)),
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFFFFAB00),
+                            foregroundColor: Colors.black,
+                          ),
+                          onPressed: () {
+                            Navigator.of(dialogContext).pop();
+                            _generarInformeGeneralCajaPdf();
+                          },
+                          icon: const Icon(Icons.assessment, size: 18),
+                          label: const Text('Imprimir Informe General de Caja (PDF)', style: TextStyle(fontWeight: FontWeight.bold)),
                         ),
                       ),
                     ],
@@ -1979,42 +2168,38 @@ class _PosScreenState extends State<PosScreen> {
                   ),
                 ),
                 Container(
-                  height: 54,
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  color: const Color(0xFF0E1626),
-                  child: ListView.builder(
-                    scrollDirection: Axis.horizontal,
-                    itemCount: categorias.length,
-                    itemBuilder: (context, index) {
-                      final cat = categorias[index];
-                      final bool seleccionado = categoriaSeleccionada == cat;
-                      final String emojiCat = _obtenerEmojiCategoria(cat);
-                      final int cantidadEnCat = cat == 'Todos'
-                          ? products.length
-                          : products.where((p) => p.categoria.trim().toLowerCase() == cat.trim().toLowerCase()).length;
+                height: 54,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                color: const Color(0xFF0E1626),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: categorias.map((cat) {
+                    final bool seleccionado = categoriaSeleccionada == cat;
+                    final String emojiCat = _obtenerEmojiCategoria(cat);
 
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 4),
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                      child: Tooltip(
+                        message: cat,
                         child: ChoiceChip(
-                          label: Text('$emojiCat $cat ($cantidadEnCat)'),
+                          label: Text(
+                            emojiCat,
+                            style: const TextStyle(fontSize: 18),
+                          ),
                           selected: seleccionado,
                           selectedColor: const Color(0xFFFFAB00),
                           backgroundColor: const Color(0xFF131C31),
-                          labelStyle: TextStyle(
-                            color: seleccionado ? Colors.black : Colors.white,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 13,
-                          ),
                           onSelected: (_) {
                             setState(() {
                               categoriaSeleccionada = cat;
                             });
                           },
                         ),
-                      );
-                    },
-                  ),
+                      ),
+                    );
+                  }).toList(),
                 ),
+              ),
                 Expanded(
                   child: cargandoProductos
                       ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFAB00)))
@@ -2156,6 +2341,7 @@ class _PosScreenState extends State<PosScreen> {
               ],
             ),
           ),
+
           const VerticalDivider(width: 1, color: Colors.white12),
           Expanded(
             flex: 5,
