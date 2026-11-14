@@ -1,5 +1,5 @@
 // Nombre del archivo: lib/views/pos_screen.dart
-
+import '../widgets/avrora_info_dialog.dart';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
@@ -151,16 +151,12 @@ class _PosScreenState extends State<PosScreen> {
       return 'Caja 1 - Principal';
     }
   }
-
+  
   @override
   void initState() {
     super.initState();
     _actualizarReloj();
     _relojTimer = Timer.periodic(const Duration(seconds: 1), (_) => _actualizarReloj());
-    HardwareKeyboard.instance.addHandler(_manejarAtajoTecladoF11);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _activarPantallaCompletaInmersiva(forzarMaximizado: true);
-    });
     _inicializarSistemaPOS();
   }
 
@@ -2940,14 +2936,14 @@ if ($modoSolapado -eq 1) {
         ),
         actions: [
           IconButton(
-            icon: Icon(
-              _pantallaCompletaActiva ? Icons.fullscreen_exit : Icons.fullscreen,
-              color: const Color(0xFF00E5FF),
-            ),
-            tooltip: _pantallaCompletaActiva
-                ? 'Mostrar Barra de Tareas de Windows (F11)'
-                : 'Ocultar Barra de Tareas y Expandir al 100% (F11)',
-            onPressed: () => _activarPantallaCompletaInmersiva(forzarMaximizado: false),
+            tooltip: 'Información Avrora Soft',
+            onPressed: () {
+              showDialog(
+                context: context,
+                builder: (context) => const AvroraInfoDialog(),
+              );
+            },
+            icon: const Icon(Icons.info_outline, color: Colors.white),
           ),
           if (_ultimoTicketGenerado != null)
             IconButton(
@@ -2989,6 +2985,7 @@ if ($modoSolapado -eq 1) {
             tooltip: 'Sincronizar Catálogo',
             onPressed: _cargarDatosDesdeSQLite,
           ),
+          const SizedBox(width: 8),
         ],
       ),
       body: Row(
