@@ -1,10 +1,8 @@
-// Nombre del archivo: admin_inventario_screen.dart
+// Nombre del archivo: lib/views/admin_inventario_screen.dart
 
-import 'dart:convert';
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
+import 'contaduria_screen.dart';
 
 class AdminInventarioScreen extends StatefulWidget {
   const AdminInventarioScreen({super.key});
@@ -20,6 +18,8 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
   List<String> _categoriasDisponibles = ['General'];
   List _listaUsuarios = [];
   bool _cargando = false;
+  String _passwordAdminActual = 'admin';
+  bool _moduloContaduriaActivo = true;
 
   // Configuración del Negocio en Memoria
   Map<String, String> _configNegocio = {
@@ -27,6 +27,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
     'direccion_negocio': 'Riberalta, Beni - Bolivia',
     'celular_negocio': '+591 70000000',
     'logo_path': '',
+    'modulo_contaduria_activo': 'true',
   };
 
   @override
@@ -55,6 +56,18 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
       final productosDB = await _dbService.obtenerProductos();
       final usuariosDB = await _dbService.obtenerUsuarios();
       final configDB = await _dbService.obtenerConfiguracionNegocio();
+      final contaduriaActiva = await _dbService.estaModuloContaduriaActivo();
+
+      String passAdm = configDB['admin_password'] ?? 'admin';
+      for (final u in usuariosDB) {
+        if (u is Map) {
+          if ((u['rol']?.toString().toLowerCase() == 'admin') ||
+              (u['nombre']?.toString().toLowerCase() == 'administrador')) {
+            passAdm = u['password']?.toString() ?? passAdm;
+            break;
+          }
+        }
+      }
 
       final List<String> catsLimpias = [];
       for (var c in cats) {
@@ -84,7 +97,9 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
           _categoriasDisponibles = catsLimpias;
           _listaProductos = tempLista;
           _listaUsuarios = usuariosDB;
-          _configNegocio = configDB;
+          _configNegocio = Map<String, String>.from(configDB);
+          _passwordAdminActual = passAdm;
+          _moduloContaduriaActivo = contaduriaActiva;
           _cargando = false;
         });
       }
@@ -95,108 +110,95 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
     }
   }
 
-  // ===========================================================================
-  // DIÁLOGO DE CONFIGURACIÓN DEL NEGOCIO (NOMBRE, DIRECCIÓN, CELULAR, LOGO)
-  // ===========================================================================
-  void _mostrarDialogoConfiguracionNegocio() {
-    final ctrlNombre = TextEditingController(text: _configNegocio['nombre_negocio']);
-    final ctrlDireccion = TextEditingController(text: _configNegocio['direccion_negocio']);
-    final ctrlCelular = TextEditingController(text: _configNegocio['celular_negocio']);
-    final ctrlLogoPath = TextEditingController(text: _configNegocio['logo_path']);
+  Future<void> _alternarModuloContaduriaLicencia() async {
+    final nuevoEstado = !_moduloContaduriaActivo;
+    await _dbService.configurarModuloContaduriaPorLicencia(nuevoEstado);
+    await _cargarDatosDB();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: nuevoEstado ? Colors.green : Colors.orangeAccent,
+        content: Text(
+          nuevoEstado
+              ? '✅ Módulo de Contaduría ACTIVADO en la licencia actual.'
+              : '🔒 Módulo de Contaduría DESACTIVADO (Modo Licencia Básica).',
+        ),
+      ),
+    );
+  }
+
+  void _mostrarDialogoCambiarPasswordAdmin() {
+    final ctrlNueva = TextEditingController(text: _passwordAdminActual);
+    final ctrlConfirmar = TextEditingController(text: _passwordAdminActual);
+    bool ocultar = true;
 
     showDialog(
       context: context,
       builder: (dialogContext) {
         return StatefulBuilder(
-          builder: (sbContext, setStateDialog) {
+          builder: (ctx, setStateDialog) {
             return AlertDialog(
               backgroundColor: const Color(0xFF0E1626),
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.circular(14),
                 side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
               ),
-              title: const Text(
-                '🏢 Configurar Negocio (Nombre, Dirección, Celular y Logo)',
-                style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+              title: const Row(
+                children: [
+                  Icon(Icons.security, color: Color(0xFFFFAB00)),
+                  SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Cambiar Contraseña del Administrador',
+                      style: TextStyle(
+                        color: Color(0xFFFFAB00),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
               ),
               content: SizedBox(
-                width: 440,
-                child: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        'Estos datos se reflejarán automáticamente en la aplicación y en todos los recibos PDF impresos.',
-                        style: TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: ctrlNombre,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          labelText: 'Nombre del Café / Snack (Ej: AScafe Riberalta)',
-                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
-                          filled: true,
-                          fillColor: const Color(0xFF131C31),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: ctrlDireccion,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          labelText: 'Dirección del Establecimiento',
-                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
-                          filled: true,
-                          fillColor: const Color(0xFF131C31),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: ctrlCelular,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          labelText: 'Número de Celular / Teléfono',
-                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
-                          filled: true,
-                          fillColor: const Color(0xFF131C31),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: ctrlLogoPath,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          labelText: 'Ruta del Archivo de Logo (Ej: C:\\logo.png o URL)',
-                          labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
-                          filled: true,
-                          fillColor: const Color(0xFF131C31),
-                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      if (ctrlLogoPath.text.trim().isNotEmpty && File(ctrlLogoPath.text.trim()).existsSync())
-                        Center(
-                          child: Container(
-                            height: 70,
-                            width: 70,
-                            margin: const EdgeInsets.only(top: 8),
-                            decoration: BoxDecoration(
-                              border: Border.all(color: Colors.white24),
-                              borderRadius: BorderRadius.circular(8),
-                              image: DecorationImage(
-                                image: FileImage(File(ctrlLogoPath.text.trim())),
-                                fit: BoxFit.cover,
-                              ),
-                            ),
+                width: 380,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    TextField(
+                      controller: ctrlNueva,
+                      obscureText: ocultar,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText: 'Nueva Contraseña de Administrador',
+                        labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                        prefixIcon: const Icon(Icons.key, color: Color(0xFFFFAB00)),
+                        suffixIcon: IconButton(
+                          icon: Icon(
+                            ocultar ? Icons.visibility_off : Icons.visibility,
+                            color: Colors.white54,
                           ),
+                          onPressed: () => setStateDialog(() => ocultar = !ocultar),
                         ),
-                    ],
-                  ),
+                        filled: true,
+                        fillColor: const Color(0xFF131C31),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextField(
+                      controller: ctrlConfirmar,
+                      obscureText: ocultar,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: InputDecoration(
+                        labelText: 'Confirmar Nueva Contraseña',
+                        labelStyle: const TextStyle(color: Color(0xFF00E5FF)),
+                        prefixIcon: const Icon(Icons.lock_outline, color: Color(0xFF00E5FF)),
+                        filled: true,
+                        fillColor: const Color(0xFF131C31),
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                      ),
+                    ),
+                  ],
                 ),
               ),
               actions: [
@@ -210,26 +212,42 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                     foregroundColor: Colors.black,
                   ),
                   icon: const Icon(Icons.save, size: 18),
-                  label: const Text('Guardar Configuración', style: TextStyle(fontWeight: FontWeight.bold)),
+                  label: const Text(
+                    'Guardar Contraseña',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                   onPressed: () async {
-                    final nuevoConfig = {
-                      'nombre_negocio': ctrlNombre.text.trim().isEmpty ? 'AScafe' : ctrlNombre.text.trim(),
-                      'direccion_negocio': ctrlDireccion.text.trim(),
-                      'celular_negocio': ctrlCelular.text.trim(),
-                      'logo_path': ctrlLogoPath.text.trim(),
-                    };
+                    final p1 = ctrlNueva.text.trim();
+                    final p2 = ctrlConfirmar.text.trim();
+                    if (p1.isEmpty) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          backgroundColor: Colors.redAccent,
+                          content: Text('⚠️ La contraseña no puede estar vacía.'),
+                        ),
+                      );
+                      return;
+                    }
+                    if (p1 != p2) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          backgroundColor: Colors.redAccent,
+                          content: Text('⚠️ Las contraseñas no coinciden.'),
+                        ),
+                      );
+                      return;
+                    }
 
-                    final navigator = Navigator.of(dialogContext);
+                    final nav = Navigator.of(dialogContext);
                     final messenger = ScaffoldMessenger.of(context);
-
-                    await _dbService.guardarConfiguracionNegocio(nuevoConfig);
+                    await _dbService.cambiarPasswordAdministradorGlobal(p1);
+                    nav.pop();
                     await _cargarDatosDB();
-
-                    navigator.pop();
+                    if (!mounted) return;
                     messenger.showSnackBar(
                       const SnackBar(
                         backgroundColor: Colors.green,
-                        content: Text('✅ Datos del negocio y logotipo guardados correctamente.'),
+                        content: Text('✅ Contraseña del Administrador actualizada correctamente.'),
                       ),
                     );
                   },
@@ -242,155 +260,19 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
     );
   }
 
-  // ===========================================================================
-  // GENERADOR DE INFORME DE CAJA Y VENTAS EN PDF (AMPLIO Y SIN REORTES)
-  // ===========================================================================
-  String _limpiarTextoPdf(String input) {
-    return input
-        .replaceAll('á', 'a')
-        .replaceAll('é', 'e')
-        .replaceAll('í', 'i')
-        .replaceAll('ó', 'o')
-        .replaceAll('ú', 'u')
-        .replaceAll('Á', 'A')
-        .replaceAll('É', 'E')
-        .replaceAll('Í', 'I')
-        .replaceAll('Ó', 'O')
-        .replaceAll('Ú', 'U')
-        .replaceAll('ñ', 'n')
-        .replaceAll('Ñ', 'N')
-        .replaceAll('(', '[')
-        .replaceAll(')', ']')
-        .replaceAll('\\', '/');
-  }
-
-  Future<void> _generarInformeCajaPdf() async {
-    final messenger = ScaffoldMessenger.of(context);
-    try {
-      final db = await _dbService.database;
-      final List sesiones = await db.query('caja_sesiones', orderBy: 'id DESC', limit: 10);
-      final List ventas = await db.query('ventas', orderBy: 'id DESC', limit: 100);
-
-      double totalGlobal = 0.0;
-      double totalEfectivo = 0.0;
-      double totalQr = 0.0;
-
-      for (final v in ventas) {
-        final mapa = v as Map;
-        final m = (mapa['total'] as num?)?.toDouble() ?? 0.0;
-        final met = mapa['metodo_pago']?.toString() ?? 'Efectivo';
-        totalGlobal += m;
-        if (met.toUpperCase().contains('QR')) {
-          totalQr += m;
-        } else {
-          totalEfectivo += m;
-        }
-      }
-
-      final nombreNegocio = _configNegocio['nombre_negocio'] ?? 'AScafe';
-      final direccionNegocio = _configNegocio['direccion_negocio'] ?? '';
-      final celularNegocio = _configNegocio['celular_negocio'] ?? '';
-
-      final List<String> lineas = [];
-      lineas.add('==================================================');
-      lineas.add('        INFORME DE CAJA Y VENTAS DEL DIA          ');
-      lineas.add('     ${_limpiarTextoPdf(nombreNegocio)} - ${_limpiarTextoPdf(direccionNegocio)}');
-      lineas.add('     Celular: ${_limpiarTextoPdf(celularNegocio)}');
-      lineas.add('==================================================');
-      lineas.add('FECHA REPORTE: ${DateTime.now().toIso8601String().split('T').first}');
-      lineas.add('--------------------------------------------------');
-      lineas.add('RESUMEN FINANCIERO GENERAL:');
-      lineas.add(' - Total Ventas Acumuladas:  Bs. ${totalGlobal.toStringAsFixed(2)}');
-      lineas.add(' - Total Efectivo en Caja:   Bs. ${totalEfectivo.toStringAsFixed(2)}');
-      lineas.add(' - Total Pagos por QR:       Bs. ${totalQr.toStringAsFixed(2)}');
-      lineas.add(' - Total Transacciones:      ${ventas.length} ventas');
-      lineas.add('--------------------------------------------------');
-      lineas.add('ULTIMAS SESIONES Y ARQUEOS DE CAJA:');
-      for (final s in sesiones) {
-        final sm = s as Map;
-        final idCaja = sm['id'];
-        final cajaNom = _limpiarTextoPdf(sm['nombre_caja']?.toString() ?? 'Caja');
-        final cajero = _limpiarTextoPdf(sm['cajero_nombre']?.toString() ?? 'Admin');
-        final estado = sm['estado']?.toString() ?? 'Abierta';
-        final inicial = (sm['monto_inicial'] as num?)?.toDouble() ?? 0.0;
-        final finalM = (sm['monto_final'] as num?)?.toDouble() ?? 0.0;
-        lineas.add('Turno #$idCaja | Caja: $cajaNom | Cajero: $cajero');
-        lineas.add('Estado: $estado | Base: Bs.$inicial | Final Arqueo: Bs.$finalM');
-        lineas.add('--------------------------------------------------');
-      }
-      lineas.add('==================================================');
-      lineas.add('    DOCUMENTO OFICIAL DE CONTROL ADMINISTRATIVO   ');
-
-      // Ancho de página mayor (400 puntos) para que no se recorte ningún texto largo
-      final int altoPagina = 220 + (lineas.length * 15);
-      final StringBuffer contenidoStream = StringBuffer();
-      contenidoStream.writeln('BT');
-      contenidoStream.writeln('/F1 9 Tf');
-      int yPos = altoPagina - 25;
-      for (final l in lineas) {
-        contenidoStream.writeln('15 $yPos Td');
-        contenidoStream.writeln('($l) Tj');
-        contenidoStream.writeln('-15 -$yPos Td');
-        yPos -= 15;
-      }
-      contenidoStream.writeln('ET');
-
-      final String streamStr = contenidoStream.toString();
-      final List<String> objetos = [
-        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
-        '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
-        '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
-      ];
-
-      final StringBuffer pdfBuffer = StringBuffer();
-      pdfBuffer.write('%PDF-1.4\n');
-      final List<int> offsets = [];
-      for (final obj in objetos) {
-        offsets.add(pdfBuffer.toString().length);
-        pdfBuffer.write(obj);
-      }
-      final int xrefStart = pdfBuffer.toString().length;
-      pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
-      pdfBuffer.write('0000000000 65535 f \n');
-      for (final off in offsets) {
-        pdfBuffer.write('${off.toString().padLeft(10, '0')} 00000 n \n');
-      }
-      pdfBuffer.write('trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\n');
-      pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
-
-      final bytesPdf = latin1.encode(pdfBuffer.toString());
-      final dirTemp = Directory.systemTemp;
-      final rutaPdf = p.join(dirTemp.path, 'informe_caja_amplio_${DateTime.now().millisecondsSinceEpoch}.pdf');
-      final archivoPdf = File(rutaPdf);
-      await archivoPdf.writeAsBytes(bytesPdf, flush: true);
-
-      if (Platform.isWindows) {
-        await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
-      }
-
-      messenger.showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.green,
-          content: Text('📄 Informe de caja amplio generado y abierto: $rutaPdf'),
-        ),
-      );
-    } catch (e) {
-      messenger.showSnackBar(
-        SnackBar(
-          backgroundColor: Colors.redAccent,
-          content: Text('Error al generar informe: $e'),
-        ),
-      );
-    }
-  }
-
-  void _mostrarDialogoGestionarCajeros() {
-    final ctrlNombreCajero = TextEditingController();
-    final ctrlNombreCaja = TextEditingController(text: 'Caja 2 - Ventas');
-    final ctrlPasswordCajero = TextEditingController();
-    String rolSeleccionado = 'cajero';
+  void _mostrarDialogoGestionarCajeros({Map<String, dynamic>? usuarioExistente}) {
+    final bool esEdicion = usuarioExistente != null;
+    final ctrlNombreCajero = TextEditingController(
+      text: esEdicion ? (usuarioExistente['nombre']?.toString() ?? '') : '',
+    );
+    final ctrlNombreCaja = TextEditingController(
+      text: esEdicion ? (usuarioExistente['nombre_caja']?.toString() ?? 'Caja 2 - Ventas') : 'Caja 2 - Ventas',
+    );
+    final ctrlPasswordCajero = TextEditingController(
+      text: esEdicion ? (usuarioExistente['password']?.toString() ?? '') : '',
+    );
+    String rolSeleccionado = esEdicion ? (usuarioExistente['rol']?.toString() ?? 'cajero') : 'cajero';
+    bool ocultarPass = false;
 
     showDialog(
       context: context,
@@ -403,9 +285,9 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                 borderRadius: BorderRadius.circular(14),
                 side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
               ),
-              title: const Text(
-                '🧑‍💼 Gestión de Cajeros, Cajas y Contraseñas',
-                style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 17),
+              title: Text(
+                esEdicion ? '🔑 Editar Usuario: ${usuarioExistente['nombre']}' : '🧑‍💼 Registrar Nuevo Cajero',
+                style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 17),
               ),
               content: SizedBox(
                 width: 480,
@@ -414,57 +296,71 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Usuarios registrados para ingresar al sistema:',
-                        style: TextStyle(color: Colors.white70, fontSize: 12),
-                      ),
-                      const SizedBox(height: 8),
-                      Container(
-                        height: 170,
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF131C31),
-                          borderRadius: BorderRadius.circular(8),
-                          border: Border.all(color: Colors.white12),
+                      if (!esEdicion) ...[
+                        const Text(
+                          'Usuarios registrados para ingresar al sistema:',
+                          style: TextStyle(color: Colors.white70, fontSize: 12),
                         ),
-                        child: ListView.builder(
-                          itemCount: _listaUsuarios.length,
-                          itemBuilder: (context, index) {
-                            final u = _listaUsuarios[index] as Map;
-                            final id = (u['id'] as num).toInt();
-                            final nom = u['nombre']?.toString() ?? '';
-                            final caja = u['nombre_caja']?.toString() ?? '';
-                            final pass = u['password']?.toString() ?? '';
-                            final esAdminUser = u['rol']?.toString() == 'admin';
+                        const SizedBox(height: 8),
+                        Container(
+                          height: 140,
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF131C31),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: Colors.white12),
+                          ),
+                          child: ListView.builder(
+                            itemCount: _listaUsuarios.length,
+                            itemBuilder: (context, index) {
+                              final u = _listaUsuarios[index] as Map;
+                              final id = (u['id'] as num).toInt();
+                              final nom = u['nombre']?.toString() ?? '';
+                              final caja = u['nombre_caja']?.toString() ?? '';
+                              final pass = u['password']?.toString() ?? '';
+                              final esAdminUser = u['rol']?.toString() == 'admin';
 
-                            return ListTile(
-                              dense: true,
-                              leading: Text(esAdminUser ? '👑' : '🧑‍💼', style: const TextStyle(fontSize: 20)),
-                              title: Text(
-                                '$nom  —  🖥️ $caja',
-                                style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-                              ),
-                              subtitle: Text(
-                                'Contraseña: $pass  |  Rol: ${esAdminUser ? "Administrador" : "Cajero"}',
-                                style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
-                              ),
-                              trailing: esAdminUser && nom == 'Administrador'
-                                  ? null
-                                  : IconButton(
-                                      icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
-                                      onPressed: () async {
-                                        await _dbService.eliminarUsuario(id);
-                                        await _cargarDatosDB();
-                                        setStateDialog(() {});
+                              return ListTile(
+                                dense: true,
+                                leading: Text(esAdminUser ? '👑' : '🧑‍💼', style: const TextStyle(fontSize: 20)),
+                                title: Text(
+                                  '$nom  —  🖥️ $caja',
+                                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                ),
+                                subtitle: Text(
+                                  'Contraseña: $pass  |  Rol: ${esAdminUser ? "Administrador" : "Cajero"}',
+                                  style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                                ),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      icon: const Icon(Icons.edit, color: Color(0xFFFFAB00), size: 18),
+                                      tooltip: 'Editar / Cambiar Clave',
+                                      onPressed: () {
+                                        Navigator.of(dialogContext).pop();
+                                        _mostrarDialogoGestionarCajeros(usuarioExistente: Map<String, dynamic>.from(u));
                                       },
                                     ),
-                            );
-                          },
+                                    if (!(esAdminUser && nom == 'Administrador'))
+                                      IconButton(
+                                        icon: const Icon(Icons.delete_forever, color: Colors.redAccent, size: 18),
+                                        onPressed: () async {
+                                          await _dbService.eliminarUsuario(id);
+                                          await _cargarDatosDB();
+                                          setStateDialog(() {});
+                                        },
+                                      ),
+                                  ],
+                                ),
+                              );
+                            },
+                          ),
                         ),
-                      ),
-                      const Divider(color: Colors.white24, height: 22),
-                      const Text(
-                        '➕ Crear o Actualizar Cajero:',
-                        style: TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, fontSize: 13),
+                        const Divider(color: Colors.white24, height: 22),
+                      ],
+                      Text(
+                        esEdicion ? 'Modificar Datos de Usuario:' : '➕ Crear Nuevo Cajero:',
+                        style: const TextStyle(color: Color(0xFF00E5FF), fontWeight: FontWeight.bold, fontSize: 13),
                       ),
                       const SizedBox(height: 10),
                       TextField(
@@ -496,10 +392,18 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                           Expanded(
                             child: TextField(
                               controller: ctrlPasswordCajero,
+                              obscureText: ocultarPass,
                               style: const TextStyle(color: Colors.white),
                               decoration: InputDecoration(
                                 labelText: 'Contraseña',
                                 labelStyle: const TextStyle(color: Colors.white70),
+                                suffixIcon: IconButton(
+                                  icon: Icon(
+                                    ocultarPass ? Icons.visibility_off : Icons.visibility,
+                                    color: Colors.white54,
+                                  ),
+                                  onPressed: () => setStateDialog(() => ocultarPass = !ocultarPass),
+                                ),
                                 filled: true,
                                 fillColor: const Color(0xFF131C31),
                                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
@@ -550,29 +454,29 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
                     backgroundColor: const Color(0xFFFFAB00),
                     foregroundColor: Colors.black,
                   ),
-                  icon: const Icon(Icons.person_add, size: 18),
-                  label: const Text('Guardar Cajero', style: TextStyle(fontWeight: FontWeight.bold)),
+                  icon: const Icon(Icons.save, size: 18),
+                  label: Text(esEdicion ? 'Guardar Cambios' : 'Guardar Cajero', style: const TextStyle(fontWeight: FontWeight.bold)),
                   onPressed: () async {
                     final nom = ctrlNombreCajero.text.trim();
                     final caja = ctrlNombreCaja.text.trim();
                     final pass = ctrlPasswordCajero.text.trim();
                     if (nom.isEmpty || caja.isEmpty || pass.isEmpty) return;
 
+                    final navigator = Navigator.of(dialogContext);
                     final messenger = ScaffoldMessenger.of(context);
                     await _dbService.crearActualizarUsuario(
+                      id: esEdicion ? (usuarioExistente['id'] as num).toInt() : null,
                       nombre: nom,
                       nombreCaja: caja,
                       password: pass,
                       rol: rolSeleccionado,
                     );
-                    ctrlNombreCajero.clear();
-                    ctrlPasswordCajero.clear();
                     await _cargarDatosDB();
-                    setStateDialog(() {});
+                    navigator.pop();
                     messenger.showSnackBar(
                       SnackBar(
                         backgroundColor: Colors.green,
-                        content: Text('✅ Usuario "$nom" guardado.'),
+                        content: Text('✅ Usuario "$nom" guardado con éxito.'),
                       ),
                     );
                   },
@@ -614,7 +518,7 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text(
-                  '⚠️ ATENCIÓN: Esta acción borrará TODAS las ventas, recibos, sesiones de caja, lotes de producción y productos.',
+                  '⚠️ ATENCIÓN: Esta acción borrará TODAS las ventas, recibos, sesiones de caja, retiros, lotes de producción y productos.',
                   style: TextStyle(color: Colors.white70, fontSize: 13),
                 ),
                 const SizedBox(height: 16),
@@ -1074,14 +978,40 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
         title: Text('👑 Panel: ${_configNegocio['nombre_negocio']} (Admin)'),
         backgroundColor: const Color(0xFF0E1626),
         actions: [
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: const Color(0xFF00E5FF),
-              foregroundColor: Colors.black,
+          if (_moduloContaduriaActivo) ...[
+            ElevatedButton.icon(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF00E5FF),
+                foregroundColor: Colors.black,
+              ),
+              onPressed: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const ContaduriaScreen()),
+                );
+                await _cargarDatosDB();
+              },
+              icon: const Icon(Icons.bar_chart_rounded, size: 18),
+              label: const Text('Contaduría', style: TextStyle(fontWeight: FontWeight.bold)),
             ),
-            onPressed: _generarInformeCajaPdf,
-            icon: const Icon(Icons.picture_as_pdf, size: 18),
-            label: const Text('Informe Caja PDF', style: TextStyle(fontWeight: FontWeight.bold)),
+            const SizedBox(width: 8),
+          ],
+          OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: _moduloContaduriaActivo ? Colors.greenAccent : Colors.grey,
+              side: BorderSide(
+                color: _moduloContaduriaActivo ? Colors.greenAccent : Colors.white24,
+              ),
+            ),
+            onPressed: _alternarModuloContaduriaLicencia,
+            icon: Icon(
+              _moduloContaduriaActivo ? Icons.verified_user : Icons.lock_outline,
+              size: 16,
+            ),
+            label: Text(
+              _moduloContaduriaActivo ? 'Lic. Contaduría: ON' : 'Lic. Contaduría: OFF',
+              style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+            ),
           ),
           const SizedBox(width: 8),
           ElevatedButton.icon(
@@ -1089,9 +1019,9 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
               backgroundColor: const Color(0xFFFFAB00),
               foregroundColor: Colors.black,
             ),
-            onPressed: _mostrarDialogoConfiguracionNegocio,
-            icon: const Icon(Icons.store, size: 18),
-            label: const Text('Config. Negocio & Logo', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () => _mostrarDialogoCambiarPasswordAdmin(),
+            icon: const Icon(Icons.security, size: 18),
+            label: Text('Clave Admin: $_passwordAdminActual', style: const TextStyle(fontWeight: FontWeight.bold)),
           ),
           const SizedBox(width: 8),
           ElevatedButton.icon(
@@ -1099,9 +1029,9 @@ class _AdminInventarioScreenState extends State<AdminInventarioScreen> {
               backgroundColor: Colors.purpleAccent,
               foregroundColor: Colors.white,
             ),
-            onPressed: _mostrarDialogoGestionarCajeros,
+            onPressed: () => _mostrarDialogoGestionarCajeros(),
             icon: const Icon(Icons.badge, size: 18),
-            label: const Text('Cajeros', style: TextStyle(fontWeight: FontWeight.bold)),
+            label: const Text('Cajeros & Claves', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
           const SizedBox(width: 8),
           ElevatedButton.icon(

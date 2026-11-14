@@ -4,9 +4,12 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import '../services/database_service.dart';
+import '../services/email_listener_service.dart';
+import '../models/email_config.dart';
 import 'admin_inventario_screen.dart';
 import '../main.dart';
 
@@ -17,6 +20,7 @@ class ItemCatalogo {
   final String categoria;
   final int stock;
   final String? emojiPersonalizado;
+  final String? imagenPath;
 
   ItemCatalogo(
     this.id,
@@ -25,6 +29,7 @@ class ItemCatalogo {
     required this.categoria,
     required this.stock,
     this.emojiPersonalizado,
+    this.imagenPath,
   });
 }
 
@@ -55,6 +60,11 @@ class PosScreen extends StatefulWidget {
 
 class _PosScreenState extends State<PosScreen> {
   final DatabaseService _dbService = DatabaseService.instance;
+  EmailListenerService? _emailListenerService;
+  StreamSubscription? _yapeUdpSubscription;
+  bool _alertaQrAbierta = false;
+  bool _modalEsperaYapeAbierto = false;
+  bool _pantallaCompletaActiva = true;
 
   List<ItemCatalogo> products = [];
   List<String> categorias = ['Todos'];
@@ -73,7 +83,8 @@ class _PosScreenState extends State<PosScreen> {
 
   String _metodoPagoSeleccionado = 'Efectivo';
   String _tipoPedido = 'Para Llevar';
-  final String _numeroMesa = '1';
+  List<String> _listaMesas = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+  String _numeroMesa = '1';
 
   int _cajaIdActual = 1;
   bool _cajaAbierta = true;
@@ -95,9 +106,17 @@ class _PosScreenState extends State<PosScreen> {
     'direccion_negocio': 'Riberalta, Beni - Bolivia',
     'celular_negocio': '+591 70000000',
     'logo_path': '',
+    'imap_host': 'imap.gmail.com',
+    'imap_port': '993',
+    'imap_email': '',
+    'imap_password': '',
+    'lista_mesas': '1,2,3,4,5,6,7,8,9,10',
+    'imagenes_productos_json': '{}',
+    'emojis_productos_json': '{}',
   };
 
   final Map<String, String> _emojisProductosCustom = {};
+  final Map<String, String> _imagenesProductosCustom = {};
 
   static const List<String> _paletaEmojisProductos = [
     '🥟', '🍗', '🥩', '🌶️', '🍯', '🧀', '🥚', '🥓',
@@ -105,6 +124,9 @@ class _PosScreenState extends State<PosScreen> {
     '🍰', '🧁', '🍩', '🍪', '🍮', '🍦', '🥪', '🍔',
     '🍕', '🌭', '🍟', '🍿', '🥗', '🍲', '🍱', '🍽️'
   ];
+
+  static const int _anchoColsEstandarPdf = 36;
+  static const String _separadorEstandarPdf = '------------------------------------';
 
   bool get _esAdminActivo {
     try {
@@ -135,18 +157,133 @@ class _PosScreenState extends State<PosScreen> {
     super.initState();
     _actualizarReloj();
     _relojTimer = Timer.periodic(const Duration(seconds: 1), (_) => _actualizarReloj());
+    HardwareKeyboard.instance.addHandler(_manejarAtajoTecladoF11);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _activarPantallaCompletaInmersiva(forzarMaximizado: true);
+    });
     _inicializarSistemaPOS();
   }
 
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_manejarAtajoTecladoF11);
     _relojTimer?.cancel();
+    _emailListenerService?.detenerMonitoreo();
+    _yapeUdpSubscription?.cancel();
     _ctrlBusqueda.dispose();
     _ctrlClienteNombre.dispose();
     _ctrlNitCi.dispose();
     _ctrlMontoRecibido.dispose();
     _ctrlDescuento.dispose();
     super.dispose();
+  }
+
+  bool _manejarAtajoTecladoF11(KeyEvent event) {
+    if (event is KeyDownEvent && event.logicalKey == LogicalKeyboardKey.f11) {
+      _activarPantallaCompletaInmersiva(forzarMaximizado: false);
+      return true;
+    }
+    return false;
+  }
+
+  Future<void> _activarPantallaCompletaInmersiva({bool forzarMaximizado = false}) async {
+    try {
+      if (forzarMaximizado) {
+        _pantallaCompletaActiva = true;
+      } else {
+        _pantallaCompletaActiva = !_pantallaCompletaActiva;
+      }
+
+      if (Platform.isWindows) {
+        final int pidActual = pid;
+        final int modoSolapado = _pantallaCompletaActiva ? 1 : 0;
+
+        // Solapa la barra de tareas dejándola en la capa inferior, manteniendo la barra superior de la app visible.
+        final String scriptPs = '''
+\$code = @"
+using System;
+using System.Runtime.InteropServices;
+
+[StructLayout(LayoutKind.Sequential)]
+public struct RECT {
+    public int Left;
+    public int Top;
+    public int Right;
+    public int Bottom;
+}
+
+public class Win32LayerOverlap {
+    [DllImport("user32.dll")] public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+    [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+    [DllImport("user32.dll")] public static extern int GetSystemMetrics(int nIndex);
+    [DllImport("user32.dll", SetLastError = true)] public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref RECT pvParam, uint fWinIni);
+}
+"@
+Add-Type -TypeDefinition \$code -Language CSharp -ErrorAction SilentlyContinue
+
+\$tray = [Win32LayerOverlap]::FindWindow("Shell_TrayWnd", \$null)
+\$traySec = [Win32LayerOverlap]::FindWindow("Shell_SecondaryTrayWnd", \$null)
+
+# La barra de tareas NUNCA se oculta; se mantiene visible en su capa inferior
+if (\$tray -ne [IntPtr]::Zero) { [Win32LayerOverlap]::ShowWindow(\$tray, 5) | Out-Null }
+if (\$traySec -ne [IntPtr]::Zero) { [Win32LayerOverlap]::ShowWindow(\$traySec, 5) | Out-Null }
+
+\$w = [Win32LayerOverlap]::GetSystemMetrics(0)
+\$h = [Win32LayerOverlap]::GetSystemMetrics(1)
+\$SPI_SETWORKAREA = 0x002F
+\$SWP_SHOWWINDOW = 0x0040
+
+\$proc = Get-Process -Id $pidActual -ErrorAction SilentlyContinue
+\$hWnd = if (\$proc) { \$proc.MainWindowHandle } else { [IntPtr]::Zero }
+
+if ($modoSolapado -eq 1) {
+    # Área de trabajo completa para que la app cubra hasta el borde, solapando la barra de tareas abajo
+    \$rectFull = New-Object RECT
+    \$rectFull.Left = 0; \$rectFull.Top = 0; \$rectFull.Right = \$w; \$rectFull.Bottom = \$h
+    [Win32LayerOverlap]::SystemParametersInfo(\$SPI_SETWORKAREA, 0, [ref]\$rectFull, 2) | Out-Null
+
+    if (\$hWnd -ne [IntPtr]::Zero) {
+        [Win32LayerOverlap]::ShowWindow(\$hWnd, 9) | Out-Null
+        [Win32LayerOverlap]::ShowWindow(\$hWnd, 3) | Out-Null
+        [Win32LayerOverlap]::SetWindowPos(\$hWnd, [IntPtr]::Zero, 0, 0, \$w, \$h, \$SWP_SHOWWINDOW) | Out-Null
+    }
+} else {
+    # Restaura el área de trabajo estándar dejando espacio para la barra de tareas
+    \$rectWork = New-Object RECT
+    \$rectWork.Left = 0; \$rectWork.Top = 0; \$rectWork.Right = \$w; \$rectWork.Bottom = \$h - 48
+    [Win32LayerOverlap]::SystemParametersInfo(\$SPI_SETWORKAREA, 0, [ref]\$rectWork, 2) | Out-Null
+
+    if (\$hWnd -ne [IntPtr]::Zero) {
+        [Win32LayerOverlap]::ShowWindow(\$hWnd, 9) | Out-Null
+        [Win32LayerOverlap]::ShowWindow(\$hWnd, 3) | Out-Null
+    }
+}
+''';
+
+        final bytesUtf16 = <int>[];
+        for (final unit in scriptPs.codeUnits) {
+          bytesUtf16.add(unit & 0xFF);
+          bytesUtf16.add((unit >> 8) & 0xFF);
+        }
+        final encodedCmd = base64Encode(bytesUtf16);
+
+        await Process.run('powershell', [
+          '-NoProfile',
+          '-NonInteractive',
+          '-WindowStyle',
+          'Hidden',
+          '-EncodedCommand',
+          encodedCmd,
+        ]);
+      }
+
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (e) {
+      debugPrint('Aviso al ajustar capa solapada: $e');
+    }
   }
 
   void _actualizarReloj() {
@@ -166,23 +303,341 @@ class _PosScreenState extends State<PosScreen> {
     }
   }
 
-Future<void> _inicializarSistemaPOS() async {
+  Future<void> _guardarMesasYMultimediaEnConfiguracion() async {
+    try {
+      _configNegocio['lista_mesas'] = _listaMesas.join(',');
+      _configNegocio['imagenes_productos_json'] = jsonEncode(_imagenesProductosCustom);
+      _configNegocio['emojis_productos_json'] = jsonEncode(_emojisProductosCustom);
+      await _dbService.guardarConfiguracionNegocio(_configNegocio);
+    } catch (e) {
+      debugPrint('Error al guardar configuración extendida: $e');
+    }
+  }
+
+  Future<void> _agregarNuevaMesa() async {
+    int maxNum = 0;
+    for (final m in _listaMesas) {
+      final n = int.tryParse(m.trim()) ?? 0;
+      if (n > maxNum) maxNum = n;
+    }
+    final String nuevaMesa = (maxNum + 1).toString();
+    setState(() {
+      _listaMesas.add(nuevaMesa);
+      _numeroMesa = nuevaMesa;
+      _tipoPedido = 'Mesa';
+    });
+    await _guardarMesasYMultimediaEnConfiguracion();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: Colors.green,
+        duration: const Duration(seconds: 1),
+        content: Text('➕ Mesa $nuevaMesa agregada (Total: ${_listaMesas.length} mesas).'),
+      ),
+    );
+  }
+
+  Future<void> _eliminarMesaActual() async {
+    if (_listaMesas.length <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Colors.orangeAccent,
+          duration: Duration(seconds: 2),
+          content: Text('⚠️ Debe quedar al menos 1 mesa disponible.'),
+        ),
+      );
+      return;
+    }
+
+    final String mesaBorrada = _numeroMesa;
+    setState(() {
+      _listaMesas.remove(_numeroMesa);
+      if (_listaMesas.isEmpty) {
+        _listaMesas.add('1');
+      }
+      _numeroMesa = _listaMesas.last;
+    });
+    await _guardarMesasYMultimediaEnConfiguracion();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        backgroundColor: Colors.redAccent,
+        duration: const Duration(seconds: 1),
+        content: Text('➖ Mesa $mesaBorrada eliminada (Quedan: ${_listaMesas.length} mesas).'),
+      ),
+    );
+  }
+
+  void _inicializarEscuchaDePagosPorUdpYape() {
+    try {
+      YapeUdpReceptor.instance.iniciarEscucha(puerto: 45455);
+      _yapeUdpSubscription?.cancel();
+      _yapeUdpSubscription = YapeUdpReceptor.instance.flujoPagos.listen((dynamic evt) {
+        if (!mounted) return;
+        if (evt is EventoPagoYape) {
+          // Si el modal de espera de cobro QR está abierto, ese modal procesa y cierra la venta automáticamente
+          if (_modalEsperaYapeAbierto) return;
+          _mostrarAlertaPagoQrDetectado(evt.monto, evt.pagador, esViaUdpYape: true);
+        }
+      });
+    } catch (e) {
+      debugPrint('Error al inicializar escucha UDP Yape: $e');
+    }
+  }
+
+  void _inicializarEscuchaDePagosPorCorreo() {
+    try {
+      _emailListenerService?.detenerMonitoreo();
+
+      final host = (_configNegocio['imap_host'] ?? 'imap.gmail.com').trim();
+      final port = int.tryParse((_configNegocio['imap_port'] ?? '993').trim()) ?? 993;
+      final email = (_configNegocio['imap_email'] ?? '').trim();
+      final password = (_configNegocio['imap_password'] ?? '').trim();
+
+      if (email.isNotEmpty && password.isNotEmpty) {
+        final config = EmailConfig(
+          host: host.isEmpty ? 'imap.gmail.com' : host,
+          port: port,
+          email: email,
+          password: password,
+          useSsl: true,
+        );
+
+        _emailListenerService = EmailListenerService(
+          onPagoDetectado: (monto, cliente, fecha) {
+            if (!mounted) return;
+            _mostrarAlertaPagoQrDetectado(monto, cliente);
+          },
+        );
+        _emailListenerService?.iniciarMonitoreo(config);
+      }
+    } catch (e) {
+      debugPrint('Error al inicializar escucha de correo: $e');
+    }
+  }
+
+  void _mostrarAlertaPagoQrDetectado(double monto, String cliente, {bool esViaUdpYape = false}) {
+    if (!mounted || _alertaQrAbierta || _modalEsperaYapeAbierto) return;
+    _alertaQrAbierta = true;
+
+    final String textoMonto = monto > 0
+        ? 'Bs. ${monto.toStringAsFixed(2)}'
+        : 'Pago QR recibido (Verificar importe)';
+
+    final bool coincideConCarrito = carrito.isNotEmpty && (monto - totalCarrito).abs() < 0.015;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: const Color(0xFF0E1626),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(14),
+          side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
+        ),
+        title: Row(
+          children: [
+            const Text('🔔 ', style: TextStyle(fontSize: 20)),
+            Expanded(
+              child: Text(
+                esViaUdpYape
+                    ? '¡Pago Yape QR Recibido en Tiempo Real (UDP)!'
+                    : '¡Pago QR Confirmado por Correo!',
+                style: const TextStyle(
+                  color: Color(0xFFFFAB00),
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16,
+                ),
+              ),
+            ),
+          ],
+        ),
+        content: Container(
+          width: 380,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: const Color(0xFF131C31),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                esViaUdpYape
+                    ? 'ASyape detectó un nuevo abono instantáneo por Wi-Fi:'
+                    : 'Se ha detectado un nuevo ingreso bancario en tu bandeja:',
+                style: const TextStyle(color: Colors.white70, fontSize: 12),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  const Text('💰 Monto: ', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  Expanded(
+                    child: Text(
+                      textoMonto,
+                      style: const TextStyle(
+                        color: Color(0xFF00E5FF),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 16,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('👤 Origen: ', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  Expanded(
+                    child: Text(
+                      cliente,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _alertaQrAbierta = false;
+              Navigator.of(dialogContext, rootNavigator: true).pop();
+            },
+            child: const Text(
+              'Cerrar',
+              style: TextStyle(color: Colors.white70, fontWeight: FontWeight.bold),
+            ),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFFFAB00),
+              foregroundColor: Colors.black,
+            ),
+            icon: const Icon(Icons.qr_code_scanner, size: 18),
+            label: Text(
+              coincideConCarrito ? 'Cobrar e Imprimir Recibo Ahora' : 'Aplicar al Carrito (QR)',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+            onPressed: () {
+              _alertaQrAbierta = false;
+              Navigator.of(dialogContext, rootNavigator: true).pop();
+              if (!mounted) return;
+              setState(() {
+                _metodoPagoSeleccionado = 'QR';
+                if (cliente.isNotEmpty &&
+                    !cliente.startsWith('Cliente vía QR') &&
+                    !cliente.startsWith('Cliente Yape QR')) {
+                  _ctrlClienteNombre.text = cliente;
+                }
+              });
+              if (coincideConCarrito) {
+                _ejecutarRegistroYReciboVenta();
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    backgroundColor: Colors.green,
+                    content: Text(
+                      '✅ Pago QR ($textoMonto) aplicado a la orden actual.',
+                    ),
+                  ),
+                );
+              }
+            },
+          ),
+        ],
+      ),
+    ).then((_) {
+      _alertaQrAbierta = false;
+    });
+  }
+
+  Future<void> _inicializarSistemaPOS() async {
     try {
       final rawConf = await _dbService.obtenerConfiguracionNegocio();
-      final Map<String, String> conf = {};
+      final Map<String, String> conf = {
+        'nombre_negocio': 'AScafe',
+        'direccion_negocio': 'Riberalta, Beni - Bolivia',
+        'celular_negocio': '+591 70000000',
+        'logo_path': '',
+        'imap_host': 'imap.gmail.com',
+        'imap_port': '993',
+        'imap_email': '',
+        'imap_password': '',
+        'lista_mesas': '1,2,3,4,5,6,7,8,9,10',
+        'imagenes_productos_json': '{}',
+        'emojis_productos_json': '{}',
+      };
       if (rawConf is Map) {
         rawConf.forEach((key, value) {
-          conf[key.toString()] = value?.toString() ?? '';
+          final valStr = value?.toString() ?? '';
+          if (valStr.isNotEmpty || !conf.containsKey(key.toString())) {
+            conf[key.toString()] = valStr;
+          }
         });
       }
 
-      setState(() {
-        _configNegocio = conf;
-      });
+      final String rawMesas = conf['lista_mesas'] ?? '1,2,3,4,5,6,7,8,9,10';
+      final List<String> mesasCargadas = rawMesas
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+      if (mesasCargadas.isEmpty) {
+        mesasCargadas.addAll(['1', '2', '3', '4', '5']);
+      }
+
+      try {
+        final rawImgJson = conf['imagenes_productos_json'] ?? '{}';
+        final decodedImg = jsonDecode(rawImgJson);
+        if (decodedImg is Map) {
+          _imagenesProductosCustom.clear();
+          decodedImg.forEach((k, v) {
+            final pathStr = v?.toString().trim() ?? '';
+            if (pathStr.isNotEmpty) {
+              _imagenesProductosCustom[k.toString()] = pathStr;
+            }
+          });
+        }
+      } catch (_) {}
+
+      try {
+        final rawEmJson = conf['emojis_productos_json'] ?? '{}';
+        final decodedEm = jsonDecode(rawEmJson);
+        if (decodedEm is Map) {
+          _emojisProductosCustom.clear();
+          decodedEm.forEach((k, v) {
+            final emStr = v?.toString().trim() ?? '';
+            if (emStr.isNotEmpty) {
+              _emojisProductosCustom[k.toString()] = emStr;
+            }
+          });
+        }
+      } catch (_) {}
+
+      if (mounted) {
+        setState(() {
+          _configNegocio = conf;
+          _listaMesas = mesasCargadas;
+          if (!_listaMesas.contains(_numeroMesa)) {
+            _numeroMesa = _listaMesas.first;
+          }
+        });
+      }
       globalLogoNotifier.value = conf['logo_path']?.toString() ?? '';
       await _verificarEstadoCajaSQLite();
       await _cargarDatosDesdeSQLite();
       await _calcularResumenVentasTurno();
+      _inicializarEscuchaDePagosPorCorreo();
+      _inicializarEscuchaDePagosPorUdpYape();
     } catch (e) {
       debugPrint('Error al inicializar sistema POS: $e');
     }
@@ -243,7 +698,91 @@ Future<void> _inicializarSistemaPOS() async {
     return '🥟';
   }
 
-void _mostrarDialogoConfiguracionNegocio() {
+  String? _obtenerRutaImagenProducto(ItemCatalogo prod) {
+    final String? ruta = (prod.imagenPath != null && prod.imagenPath!.isNotEmpty)
+        ? prod.imagenPath
+        : _imagenesProductosCustom[prod.id.toString()];
+    if (ruta != null && ruta.isNotEmpty && File(ruta).existsSync()) {
+      return ruta;
+    }
+    return null;
+  }
+
+  Widget _construirIlustracionMiniaturaCarrito(ItemCatalogo prod) {
+    final String? rutaFoto = _obtenerRutaImagenProducto(prod);
+    return Container(
+      width: 38,
+      height: 38,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0F1D),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: const Color(0xFFFFAB00).withOpacity(0.75), width: 1.2),
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(8.5),
+        child: rutaFoto != null
+            ? Image.file(
+                File(rutaFoto),
+                width: 38,
+                height: 38,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Center(
+                  child: Text(_obtenerEmojiProducto(prod), style: const TextStyle(fontSize: 20)),
+                ),
+              )
+            : Center(
+                child: Text(_obtenerEmojiProducto(prod), style: const TextStyle(fontSize: 20)),
+              ),
+      ),
+    );
+  }
+
+  Widget _construirIlustracionCentralProminente(ItemCatalogo prod) {
+    final String? rutaFoto = _obtenerRutaImagenProducto(prod);
+    return Container(
+      width: double.infinity,
+      height: double.infinity,
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0F1D),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: const Color(0xFFFFAB00).withOpacity(0.85),
+          width: 1.6,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.35),
+            blurRadius: 6,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12.5),
+        child: rutaFoto != null
+            ? Image.file(
+                File(rutaFoto),
+                width: double.infinity,
+                height: double.infinity,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => Center(
+                  child: Text(
+                    _obtenerEmojiProducto(prod),
+                    style: const TextStyle(fontSize: 52),
+                  ),
+                ),
+              )
+            : Center(
+                child: Text(
+                  _obtenerEmojiProducto(prod),
+                  style: const TextStyle(fontSize: 52),
+                ),
+              ),
+      ),
+    );
+  }
+
+  void _mostrarDialogoConfiguracionNegocio() {
     if (!_esAdminActivo) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -259,6 +798,19 @@ void _mostrarDialogoConfiguracionNegocio() {
     final ctrlCelular = TextEditingController(text: _configNegocio['celular_negocio'] ?? '+591 70000000');
     final ctrlLogoPath = TextEditingController(text: _configNegocio['logo_path'] ?? '');
 
+    final ctrlImapHost = TextEditingController(
+      text: (_configNegocio['imap_host']?.isNotEmpty == true) ? _configNegocio['imap_host']! : 'imap.gmail.com',
+    );
+    final ctrlImapPort = TextEditingController(
+      text: (_configNegocio['imap_port']?.isNotEmpty == true) ? _configNegocio['imap_port']! : '993',
+    );
+    final ctrlImapEmail = TextEditingController(text: _configNegocio['imap_email'] ?? '');
+    final ctrlImapPassword = TextEditingController(text: _configNegocio['imap_password'] ?? '');
+    bool ocultarPass = true;
+    bool probandoImap = false;
+    String? mensajeResultadoImap;
+    bool exitoResultadoImap = false;
+
     showDialog(
       context: context,
       builder: (dialogContext) {
@@ -268,7 +820,7 @@ void _mostrarDialogoConfiguracionNegocio() {
               try {
                 FilePickerResult? result = await FilePicker.platform.pickFiles(
                   type: FileType.custom,
-                  allowedExtensions: ['png', 'jpg', 'jpeg'],
+                  allowedExtensions: ['png', 'jpg', 'jpeg', 'webp'],
                   allowMultiple: false,
                 );
 
@@ -285,6 +837,42 @@ void _mostrarDialogoConfiguracionNegocio() {
               }
             }
 
+            Future<void> ejecutarPruebaImap() async {
+              final host = ctrlImapHost.text.trim().isEmpty ? 'imap.gmail.com' : ctrlImapHost.text.trim();
+              final port = int.tryParse(ctrlImapPort.text.trim()) ?? 993;
+              final email = ctrlImapEmail.text.trim();
+              final password = ctrlImapPassword.text.trim();
+
+              if (email.isEmpty || password.isEmpty) {
+                setStateDialog(() {
+                  exitoResultadoImap = false;
+                  mensajeResultadoImap = '⚠️ Ingresa tu correo electrónico y la contraseña de aplicación antes de probar.';
+                });
+                return;
+              }
+
+              setStateDialog(() {
+                probandoImap = true;
+                mensajeResultadoImap = null;
+              });
+
+              final res = await EmailListenerService.probarConexion(
+                EmailConfig(
+                  host: host,
+                  port: port,
+                  email: email,
+                  password: password,
+                  useSsl: true,
+                ),
+              );
+
+              setStateDialog(() {
+                probandoImap = false;
+                exitoResultadoImap = res['exito'] == true;
+                mensajeResultadoImap = res['mensaje']?.toString() ?? '';
+              });
+            }
+
             return AlertDialog(
               backgroundColor: const Color(0xFF0E1626),
               shape: RoundedRectangleBorder(
@@ -294,14 +882,16 @@ void _mostrarDialogoConfiguracionNegocio() {
               title: const Row(
                 children: [
                   Text('⚙️ ', style: TextStyle(fontSize: 22)),
-                  Text(
-                    'Configuración del Establecimiento y Logo',
-                    style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+                  Expanded(
+                    child: Text(
+                      'Configuración del Establecimiento y Pagos QR',
+                      style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
+                    ),
                   ),
                 ],
               ),
               content: SizedBox(
-                width: 440,
+                width: 460,
                 child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -403,6 +993,142 @@ void _mostrarDialogoConfiguracionNegocio() {
                           border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
                         ),
                       ),
+                      const SizedBox(height: 18),
+                      const Divider(color: Colors.white24),
+                      const SizedBox(height: 6),
+                      const Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          '📧 Correo Receptor para Alertas de Pagos QR (IMAP):',
+                          style: TextStyle(color: Color(0xFFFFAB00), fontSize: 13, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Row(
+                        children: [
+                          Expanded(
+                            flex: 3,
+                            child: TextField(
+                              controller: ctrlImapHost,
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              decoration: InputDecoration(
+                                labelText: 'Servidor IMAP (Ej: imap.gmail.com)',
+                                labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                                filled: true,
+                                fillColor: const Color(0xFF131C31),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            flex: 1,
+                            child: TextField(
+                              controller: ctrlImapPort,
+                              keyboardType: TextInputType.number,
+                              style: const TextStyle(color: Colors.white, fontSize: 13),
+                              decoration: InputDecoration(
+                                labelText: 'Puerto',
+                                labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11),
+                                filled: true,
+                                fillColor: const Color(0xFF131C31),
+                                border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlImapEmail,
+                        keyboardType: TextInputType.emailAddress,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.email_outlined, color: Color(0xFF00E5FF), size: 18),
+                          labelText: 'Correo Electrónico de Notificaciones Bancarias',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      TextField(
+                        controller: ctrlImapPassword,
+                        obscureText: ocultarPass,
+                        style: const TextStyle(color: Colors.white),
+                        decoration: InputDecoration(
+                          prefixIcon: const Icon(Icons.key, color: Color(0xFFFFAB00), size: 18),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              ocultarPass ? Icons.visibility_off : Icons.visibility,
+                              color: Colors.white54,
+                              size: 18,
+                            ),
+                            onPressed: () {
+                              setStateDialog(() {
+                                ocultarPass = !ocultarPass;
+                              });
+                            },
+                          ),
+                          labelText: 'Contraseña de Aplicación (App Password)',
+                          labelStyle: const TextStyle(color: Color(0xFF00E5FF), fontSize: 12),
+                          filled: true,
+                          fillColor: const Color(0xFF131C31),
+                          border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          style: OutlinedButton.styleFrom(
+                            foregroundColor: const Color(0xFF00E5FF),
+                            side: const BorderSide(color: Color(0xFF00E5FF), width: 1.4),
+                            padding: const EdgeInsets.symmetric(vertical: 12),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                          ),
+                          onPressed: probandoImap ? null : ejecutarPruebaImap,
+                          icon: probandoImap
+                              ? const SizedBox(
+                                  width: 16,
+                                  height: 16,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                    color: Color(0xFF00E5FF),
+                                  ),
+                                )
+                              : const Icon(Icons.wifi_tethering, size: 18),
+                          label: Text(
+                            probandoImap ? 'Probando conexión con el servidor IMAP...' : 'Probar Conexión IMAP',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                      ),
+                      if (mensajeResultadoImap != null) ...[
+                        const SizedBox(height: 10),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: exitoResultadoImap
+                                ? Colors.green.withOpacity(0.15)
+                                : Colors.red.withOpacity(0.15),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: exitoResultadoImap ? Colors.greenAccent : Colors.redAccent,
+                            ),
+                          ),
+                          child: Text(
+                            mensajeResultadoImap!,
+                            style: TextStyle(
+                              color: exitoResultadoImap ? Colors.greenAccent : Colors.redAccent,
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ],
                     ],
                   ),
                 ),
@@ -452,6 +1178,13 @@ void _mostrarDialogoConfiguracionNegocio() {
                       'direccion_negocio': ctrlDireccion.text.trim(),
                       'celular_negocio': ctrlCelular.text.trim(),
                       'logo_path': nuevoLogo,
+                      'imap_host': ctrlImapHost.text.trim().isEmpty ? 'imap.gmail.com' : ctrlImapHost.text.trim(),
+                      'imap_port': ctrlImapPort.text.trim().isEmpty ? '993' : ctrlImapPort.text.trim(),
+                      'imap_email': ctrlImapEmail.text.trim(),
+                      'imap_password': ctrlImapPassword.text.trim(),
+                      'lista_mesas': _listaMesas.join(','),
+                      'imagenes_productos_json': jsonEncode(_imagenesProductosCustom),
+                      'emojis_productos_json': jsonEncode(_emojisProductosCustom),
                     });
 
                     globalLogoNotifier.value = nuevoLogo;
@@ -462,7 +1195,7 @@ void _mostrarDialogoConfiguracionNegocio() {
                     scaffoldMessenger.showSnackBar(
                       const SnackBar(
                         backgroundColor: Colors.green,
-                        content: Text('✨ Configuración y logo actualizados exitosamente.'),
+                        content: Text('✨ Configuración, logo y correo QR actualizados exitosamente.'),
                       ),
                     );
                   },
@@ -477,101 +1210,122 @@ void _mostrarDialogoConfiguracionNegocio() {
 
   String _limpiarTextoPdf(String input) {
     return input
-        .replaceAll('á', 'a')
-        .replaceAll('é', 'e')
-        .replaceAll('í', 'i')
-        .replaceAll('ó', 'o')
-        .replaceAll('ú', 'u')
-        .replaceAll('Á', 'A')
-        .replaceAll('É', 'E')
-        .replaceAll('Í', 'I')
-        .replaceAll('Ó', 'O')
-        .replaceAll('Ú', 'U')
-        .replaceAll('ñ', 'n')
-        .replaceAll('Ñ', 'N')
         .replaceAll('(', '[')
         .replaceAll(')', ']')
         .replaceAll('\\', '/');
   }
 
-  List<int> _construirBytesPdfRecibo(Map<String, dynamic> ticket) {
+  String _extraerTelefonoSinPais(String rawPhone) {
+    String limpio = rawPhone.trim();
+    limpio = limpio.replaceFirst(RegExp(r'^\+?591[\s\-]*'), '').trim();
+    limpio = limpio.replaceAll(RegExp(r'\s+'), '');
+    return limpio;
+  }
+
+  String _centrarLineaRecibo(String texto, [int ancho = _anchoColsEstandarPdf]) {
+    final limpio = texto.trim();
+    if (limpio.length >= ancho) return limpio;
+    final espaciosIzq = ((ancho - limpio.length) / 2).floor();
+    return (' ' * espaciosIzq) + limpio;
+  }
+
+  String _formatearTituloNegocioConTelefono({String? nombreCustom, String? celularCustom}) {
+    final String nombreNeg = _limpiarTextoPdf(
+      (nombreCustom?.isNotEmpty == true ? nombreCustom! : (_configNegocio['nombre_negocio'] ?? 'AScafe')),
+    ).toUpperCase().trim();
+    final String telSinPais = _limpiarTextoPdf(
+      _extraerTelefonoSinPais(celularCustom?.isNotEmpty == true ? celularCustom! : (_configNegocio['celular_negocio'] ?? '')),
+    );
+
+    if (telSinPais.isEmpty) return nombreNeg;
+
+    final String opcionCompleta = '$nombreNeg - Tel: $telSinPais';
+    if (opcionCompleta.length <= _anchoColsEstandarPdf) {
+      return opcionCompleta;
+    }
+    return '$nombreNeg - $telSinPais';
+  }
+
+  String _formatearModalidadTicket(Map<String, dynamic> ticket) {
+    final String tipo = (ticket['tipo_pedido']?.toString() ?? 'Para Llevar').trim();
+    final String mesa = (ticket['mesa']?.toString() ?? '1').trim();
+    if (tipo.toLowerCase() == 'mesa') {
+      return 'Mesa $mesa';
+    }
+    return tipo;
+  }
+
+  List<String> _construirLineasCompactasRecibo(Map<String, dynamic> ticket) {
     final List items = ticket['items'] as List;
-    final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
-    final dirNeg = _configNegocio['direccion_negocio'] ?? '';
-    final celNeg = _configNegocio['celular_negocio'] ?? '';
+    final String lineaTitulo = _formatearTituloNegocioConTelefono();
+    final String dirNeg = _limpiarTextoPdf(_configNegocio['direccion_negocio'] ?? '');
+
+    final String modalidadTexto = _limpiarTextoPdf(_formatearModalidadTicket(ticket));
+    final String cajeroTexto = _limpiarTextoPdf(ticket['cajero']?.toString() ?? '');
+    final String metodoPagoTexto = _limpiarTextoPdf(ticket['metodo_pago']?.toString() ?? '');
 
     final List<String> lineas = [];
-    lineas.add('======================================');
-    lineas.add('       ${_limpiarTextoPdf(nombreNeg).toUpperCase()}        ');
-    if (dirNeg.isNotEmpty) lineas.add('   ${_limpiarTextoPdf(dirNeg)}   ');
-    if (celNeg.isNotEmpty) lineas.add('   Celular: ${_limpiarTextoPdf(celNeg)}   ');
-    lineas.add('======================================');
-    lineas.add('RECIBO DE VENTA NRO: #${ticket['venta_id']}');
-    lineas.add('FECHA Y HORA: ${ticket['fecha']}');
-    lineas.add('CAJA: ${_limpiarTextoPdf(ticket['nombre_caja']?.toString() ?? '')}');
-    lineas.add('CAJERO: ${_limpiarTextoPdf(ticket['cajero']?.toString() ?? '')}');
-    lineas.add('CLIENTE: ${_limpiarTextoPdf(ticket['cliente']?.toString() ?? '')}');
-    lineas.add('NIT / CI: ${_limpiarTextoPdf(ticket['nit_ci']?.toString() ?? '0')}');
-    lineas.add('MODALIDAD: ${_limpiarTextoPdf(ticket['tipo_pedido']?.toString() ?? '')}');
-    lineas.add('FORMA DE PAGO: ${_limpiarTextoPdf(ticket['metodo_pago']?.toString() ?? '')}');
-    lineas.add('--------------------------------------');
-    lineas.add('CANT  DESCRIPCION             SUBTOTAL');
-    lineas.add('--------------------------------------');
+
+    lineas.add(_centrarLineaRecibo(lineaTitulo, _anchoColsEstandarPdf));
+    if (dirNeg.isNotEmpty) {
+      lineas.add(_centrarLineaRecibo(dirNeg, _anchoColsEstandarPdf));
+    }
+    lineas.add(_separadorEstandarPdf);
+    lineas.add('Recibo #${ticket['venta_id']} | ${ticket['fecha']}');
+    lineas.add('Cajera: $cajeroTexto');
+    lineas.add('Forma de Pago: $metodoPagoTexto');
+    lineas.add('Pedido: $modalidadTexto');
+    lineas.add(_separadorEstandarPdf);
 
     for (final it in items) {
       final m = it as Map;
-      final cant = '${m['cantidad']}x'.padRight(5);
-      final nom = _limpiarTextoPdf(m['nombre']?.toString() ?? '').padRight(20);
-      final nomCorto = nom.length > 20 ? nom.substring(0, 20) : nom;
-      final sub = 'Bs.${(m['subtotal'] as num).toStringAsFixed(2)}'.padLeft(11);
-      lineas.add('$cant $nomCorto $sub');
+      final cant = '${m['cantidad']}x'.padRight(4);
+      final nom = _limpiarTextoPdf(m['nombre']?.toString() ?? '');
+      final nomAjustado = nom.length > 20 ? nom.substring(0, 20) : nom.padRight(20);
+      final sub = 'Bs.${(m['subtotal'] as num).toStringAsFixed(2)}'.padLeft(10);
+      lineas.add('$cant $nomAjustado $sub');
     }
 
-    lineas.add('--------------------------------------');
-    lineas.add('SUBTOTAL:          Bs. ${(ticket['subtotal'] as num).toStringAsFixed(2)}');
-    if ((ticket['descuento'] as num) > 0) {
-      lineas.add('DESCUENTO:       - Bs. ${(ticket['descuento'] as num).toStringAsFixed(2)}');
-    }
-    lineas.add('TOTAL PAGADO:      Bs. ${(ticket['total'] as num).toStringAsFixed(2)}');
-    if (ticket['metodo_pago'] == 'Efectivo') {
-      lineas.add('EFECTIVO RECIBIDO: Bs. ${(ticket['efectivo'] as num).toStringAsFixed(2)}');
-      lineas.add('CAMBIO / VUELTO:   Bs. ${(ticket['cambio'] as num).toStringAsFixed(2)}');
-    } else {
-      lineas.add('PAGO MEDIANTE TRANSFERENCIA QR EXACTO');
-    }
-    lineas.add('======================================');
-    lineas.add('     GRACIAS POR SU PREFERENCIA!      ');
+    lineas.add(_separadorEstandarPdf);
+    final totalStr = 'Bs.${(ticket['total'] as num).toStringAsFixed(2)}'.padLeft(22);
+    lineas.add('TOTAL PAGADO: $totalStr');
 
-    final int altoPagina = 180 + (lineas.length * 14);
+    return lineas;
+  }
+
+  List<int> _generarBytesPdfEstandarCompacto(List<String> lineas) {
+    final int altoPagina = 32 + (lineas.length * 10);
     final StringBuffer contenidoStream = StringBuffer();
     contenidoStream.writeln('BT');
-    contenidoStream.writeln('/F1 8.5 Tf');
-    int yPos = altoPagina - 25;
+    contenidoStream.writeln('/F1 7.7 Tf');
+    int yPos = altoPagina - 13;
     for (final l in lineas) {
-      contenidoStream.writeln('12 $yPos Td');
+      contenidoStream.writeln('8 $yPos Td');
       contenidoStream.writeln('($l) Tj');
-      contenidoStream.writeln('-12 -$yPos Td');
-      yPos -= 13;
+      contenidoStream.writeln('-8 -$yPos Td');
+      yPos -= 9;
     }
     contenidoStream.writeln('ET');
 
     final String streamStr = contenidoStream.toString();
+    final List<int> streamBytes = latin1.encode(streamStr);
+
     final List<String> objetos = [
       '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
       '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
       '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 226 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
-      '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
-      '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
+      '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier /Encoding /WinAnsiEncoding >>\nendobj\n',
+      '5 0 obj\n<< /Length ${streamBytes.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
     ];
 
     final StringBuffer pdfBuffer = StringBuffer();
     pdfBuffer.write('%PDF-1.4\n');
     final List<int> offsets = [];
     for (final obj in objetos) {
-      offsets.add(pdfBuffer.toString().length);
+      offsets.add(latin1.encode(pdfBuffer.toString()).length);
       pdfBuffer.write(obj);
     }
-    final int xrefStart = pdfBuffer.toString().length;
+    final int xrefStart = latin1.encode(pdfBuffer.toString()).length;
     pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
     pdfBuffer.write('0000000000 65535 f \n');
     for (final off in offsets) {
@@ -581,6 +1335,11 @@ void _mostrarDialogoConfiguracionNegocio() {
     pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
 
     return latin1.encode(pdfBuffer.toString());
+  }
+
+  List<int> _construirBytesPdfRecibo(Map<String, dynamic> ticket) {
+    final List<String> lineas = _construirLineasCompactasRecibo(ticket);
+    return _generarBytesPdfEstandarCompacto(lineas);
   }
 
   Future<void> _generarEImprimirReciboPdf(Map<String, dynamic> ticket) async {
@@ -593,29 +1352,12 @@ void _mostrarDialogoConfiguracionNegocio() {
       await archivoPdf.writeAsBytes(bytesPdf, flush: true);
 
       final rutaTxt = p.join(dirTemp.path, 'recibo_termico_${ticket['venta_id']}.txt');
-      final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
-      final StringBuffer sbTxt = StringBuffer();
-      sbTxt.writeln('======================================');
-      sbTxt.writeln('       ${nombreNeg.toUpperCase()}        ');
-      sbTxt.writeln('======================================');
-      sbTxt.writeln('RECIBO NRO: #${ticket['venta_id']}');
-      sbTxt.writeln('FECHA Y HORA: ${ticket['fecha']}');
-      sbTxt.writeln('CAJA: ${ticket['nombre_caja']}');
-      sbTxt.writeln('CAJERO: ${ticket['cajero']}');
-      sbTxt.writeln('CLIENTE: ${ticket['cliente']} | NIT/CI: ${ticket['nit_ci']}');
-      sbTxt.writeln('FORMA DE PAGO: ${ticket['metodo_pago']}');
-      sbTxt.writeln('--------------------------------------');
-      for (final it in (ticket['items'] as List)) {
-        final m = it as Map;
-        sbTxt.writeln('${m['cantidad']}x ${m['nombre']} -> Bs. ${(m['subtotal'] as num).toStringAsFixed(2)}');
-      }
-      sbTxt.writeln('--------------------------------------');
-      sbTxt.writeln('TOTAL A PAGAR: Bs. ${(ticket['total'] as num).toStringAsFixed(2)}');
-      if (ticket['metodo_pago'] == 'Efectivo') {
-        sbTxt.writeln('RECIBIDO: Bs. ${(ticket['efectivo'] as num).toStringAsFixed(2)} | CAMBIO: Bs. ${(ticket['cambio'] as num).toStringAsFixed(2)}');
-      }
-      sbTxt.writeln('======================================');
-      await File(rutaTxt).writeAsString(sbTxt.toString(), flush: true);
+      final lineasCompactas = _construirLineasCompactasRecibo(ticket);
+      await File(rutaTxt).writeAsString(
+        '${lineasCompactas.join('\r\n')}\r\n',
+        encoding: latin1,
+        flush: true,
+      );
 
       if (Platform.isWindows) {
         await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
@@ -625,7 +1367,7 @@ void _mostrarDialogoConfiguracionNegocio() {
       messenger.showSnackBar(
         SnackBar(
           backgroundColor: Colors.green,
-          content: Text('🖨️ Recibo PDF generado e impreso: $rutaPdf'),
+          content: Text('🖨️ Recibo compacto generado e impreso: $rutaPdf'),
         ),
       );
     } catch (e) {
@@ -648,19 +1390,22 @@ void _mostrarDialogoConfiguracionNegocio() {
         whereArgs: [_cajaIdActual, _nombreCajeroActivo],
       );
 
-      final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
+      final String lineaTitulo = _formatearTituloNegocioConTelefono();
+      final String dirNeg = _limpiarTextoPdf(_configNegocio['direccion_negocio'] ?? '');
+
       final List<String> lineas = [];
-      lineas.add('======================================');
-      lineas.add('      INFORME INDIVIDUAL DE CAJERO    ');
-      lineas.add('       ${_limpiarTextoPdf(nombreNeg).toUpperCase()}        ');
-      lineas.add('======================================');
-      lineas.add('CAJERO: ${_limpiarTextoPdf(_nombreCajeroActivo)}');
-      lineas.add('CAJA: ${_limpiarTextoPdf(_nombreCajaActiva)}');
-      lineas.add('FECHA: $_fechaActual');
-      lineas.add('TURNO ID: #$_cajaIdActual');
-      lineas.add('--------------------------------------');
-      lineas.add('VENTAS REGISTRADAS: ${ventasCajero.length}');
-      
+      lineas.add(_centrarLineaRecibo(lineaTitulo, _anchoColsEstandarPdf));
+      if (dirNeg.isNotEmpty) {
+        lineas.add(_centrarLineaRecibo(dirNeg, _anchoColsEstandarPdf));
+      }
+      lineas.add(_centrarLineaRecibo('INFORME INDIVIDUAL DE CAJERO', _anchoColsEstandarPdf));
+      lineas.add(_separadorEstandarPdf);
+      lineas.add('Turno #$_cajaIdActual | $_fechaActual $_horaActual');
+      lineas.add('Cajera: ${_limpiarTextoPdf(_nombreCajeroActivo)}');
+      lineas.add('Caja: ${_limpiarTextoPdf(_nombreCajaActiva)}');
+      lineas.add('Ventas Registradas: ${ventasCajero.length}');
+      lineas.add(_separadorEstandarPdf);
+
       double totalCajero = 0.0;
       double efectivoCajero = 0.0;
       double qrCajero = 0.0;
@@ -677,55 +1422,20 @@ void _mostrarDialogoConfiguracionNegocio() {
         }
       }
 
-      lineas.add('TOTAL RECAUDADO: Bs. ${totalCajero.toStringAsFixed(2)}');
-      lineas.add(' - Efectivo: Bs. ${efectivoCajero.toStringAsFixed(2)}');
-      lineas.add(' - Pagos QR: Bs. ${qrCajero.toStringAsFixed(2)}');
-      lineas.add('BASE INICIAL (FONDO): Bs. ${_montoInicialCaja.toStringAsFixed(2)}');
-      lineas.add('EFECTIVO EN GAVETA: Bs. ${(_montoInicialCaja + efectivoCajero).toStringAsFixed(2)}');
-      lineas.add('======================================');
-      lineas.add('FIRMA CAJERO: ________________________');
+      lineas.add('Forma de Pago Efectivo: Bs. ${efectivoCajero.toStringAsFixed(2)}');
+      lineas.add('Forma de Pago QR:       Bs. ${qrCajero.toStringAsFixed(2)}');
+      lineas.add('Fondo Base Inicial:     Bs. ${_montoInicialCaja.toStringAsFixed(2)}');
+      lineas.add(_separadorEstandarPdf);
+      lineas.add('TOTAL RECAUDADO:        Bs. ${totalCajero.toStringAsFixed(2)}');
+      lineas.add('EFECTIVO EN GAVETA:     Bs. ${(_montoInicialCaja + efectivoCajero).toStringAsFixed(2)}');
+      lineas.add(_separadorEstandarPdf);
+      lineas.add('Firma: _____________________________');
 
-      final int altoPagina = 180 + (lineas.length * 14);
-      final StringBuffer contenidoStream = StringBuffer();
-      contenidoStream.writeln('BT');
-      contenidoStream.writeln('/F1 8.5 Tf');
-      int yPos = altoPagina - 25;
-      for (final l in lineas) {
-        contenidoStream.writeln('12 $yPos Td');
-        contenidoStream.writeln('($l) Tj');
-        contenidoStream.writeln('-12 -$yPos Td');
-        yPos -= 13;
-      }
-      contenidoStream.writeln('ET');
-
-      final String streamStr = contenidoStream.toString();
-      final List<String> objetos = [
-        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 226 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
-        '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
-        '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
-      ];
-
-      final StringBuffer pdfBuffer = StringBuffer();
-      pdfBuffer.write('%PDF-1.4\n');
-      final List<int> offsets = [];
-      for (final obj in objetos) {
-        offsets.add(pdfBuffer.toString().length);
-        pdfBuffer.write(obj);
-      }
-      final int xrefStart = pdfBuffer.toString().length;
-      pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
-      pdfBuffer.write('0000000000 65535 f \n');
-      for (final off in offsets) {
-        pdfBuffer.write('${off.toString().padLeft(10, '0')} 00000 n \n');
-      }
-      pdfBuffer.write('trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\n');
-      pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
+      final bytesPdf = _generarBytesPdfEstandarCompacto(lineas);
 
       final dirTemp = Directory.systemTemp;
       final rutaPdf = p.join(dirTemp.path, 'informe_cajero_${_nombreCajeroActivo}_$_cajaIdActual.pdf');
-      await File(rutaPdf).writeAsBytes(latin1.encode(pdfBuffer.toString()), flush: true);
+      await File(rutaPdf).writeAsBytes(bytesPdf, flush: true);
 
       if (Platform.isWindows) {
         await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
@@ -743,11 +1453,12 @@ void _mostrarDialogoConfiguracionNegocio() {
       );
     }
   }
-Future<void> _generarInformeGeneralCajaPdf() async {
+
+  Future<void> _generarInformeGeneralCajaPdf() async {
     final messenger = ScaffoldMessenger.of(context);
     try {
       final db = await _dbService.database;
-      
+
       final rawConf = await _dbService.obtenerConfiguracionNegocio();
       final Map<String, String> conf = {};
       if (rawConf is Map) {
@@ -756,27 +1467,37 @@ Future<void> _generarInformeGeneralCajaPdf() async {
         });
       }
 
-      final nombreNeg = conf['nombre_negocio']?.isNotEmpty == true ? conf['nombre_negocio']! : (_configNegocio['nombre_negocio'] ?? 'AScafe');
-      final dirNeg = conf['direccion_negocio']?.isNotEmpty == true ? conf['direccion_negocio']! : (_configNegocio['direccion_negocio'] ?? 'Riberalta, Beni - Bolivia');
-      final celNeg = conf['celular_negocio']?.isNotEmpty == true ? conf['celular_negocio']! : (_configNegocio['celular_negocio'] ?? '+591 70000000');
+      final nombreNeg = conf['nombre_negocio']?.isNotEmpty == true
+          ? conf['nombre_negocio']!
+          : (_configNegocio['nombre_negocio'] ?? 'AScafe');
+      final dirNeg = _limpiarTextoPdf(
+        conf['direccion_negocio']?.isNotEmpty == true
+            ? conf['direccion_negocio']!
+            : (_configNegocio['direccion_negocio'] ?? 'Riberalta, Beni - Bolivia'),
+      );
+      final celNeg = conf['celular_negocio']?.isNotEmpty == true
+          ? conf['celular_negocio']!
+          : (_configNegocio['celular_negocio'] ?? '+591 70000000');
+
+      final String lineaTitulo = _formatearTituloNegocioConTelefono(
+        nombreCustom: nombreNeg,
+        celularCustom: celNeg,
+      );
 
       final List todasLasVentas = await db.query('ventas');
       final List sesionesCaja = await db.query('caja_sesiones', orderBy: 'id DESC', limit: 5);
 
       final List<String> lineas = [];
-      // Línea divisoria acortada de 38 a 34 caracteres
-      const String div = '----------------------------------';
-      
-      lineas.add('==================================');
-      lineas.add('    INFORME DE CAJA Y VENTAS     ');
-      lineas.add('       ${_limpiarTextoPdf(nombreNeg).toUpperCase()}        ');
-      if (dirNeg.isNotEmpty) lineas.add('  ${_limpiarTextoPdf(dirNeg)}  ');
-      if (celNeg.isNotEmpty) lineas.add('  Celular: ${_limpiarTextoPdf(celNeg)}  ');
-      lineas.add('==================================');
-      lineas.add('FECHA REPORTE: $_fechaActual');
-      lineas.add(div);
-      lineas.add('RESUMEN FINANCIERO GENERAL:');
-      
+      lineas.add(_centrarLineaRecibo(lineaTitulo, _anchoColsEstandarPdf));
+      if (dirNeg.isNotEmpty) {
+        lineas.add(_centrarLineaRecibo(dirNeg, _anchoColsEstandarPdf));
+      }
+      lineas.add(_centrarLineaRecibo('INFORME GENERAL DE CAJA Y VENTAS', _anchoColsEstandarPdf));
+      lineas.add(_separadorEstandarPdf);
+      lineas.add('Fecha: $_fechaActual $_horaActual');
+      lineas.add('Transacciones: ${todasLasVentas.length} ventas');
+      lineas.add(_separadorEstandarPdf);
+
       double totalGeneral = 0.0;
       double efectivoGeneral = 0.0;
       double qrGeneral = 0.0;
@@ -813,93 +1534,48 @@ Future<void> _generarInformeGeneralCajaPdf() async {
         }
       }
 
-      lineas.add('- Ventas Acum: Bs. ${totalGeneral.toStringAsFixed(2)}');
-      lineas.add('- Efectivo Caja: Bs. ${efectivoGeneral.toStringAsFixed(2)}');
-      lineas.add('- Pagos QR: Bs. ${qrGeneral.toStringAsFixed(2)}');
-      lineas.add('- Transacciones: ${todasLasVentas.length} ventas');
-      lineas.add(div);
-      lineas.add('ULTIMAS SESIONES Y ARQUEOS:');
+      lineas.add('Forma de Pago Efectivo: Bs. ${efectivoGeneral.toStringAsFixed(2)}');
+      lineas.add('Forma de Pago QR:       Bs. ${qrGeneral.toStringAsFixed(2)}');
+      lineas.add('TOTAL ACUMULADO:        Bs. ${totalGeneral.toStringAsFixed(2)}');
+      lineas.add(_separadorEstandarPdf);
+      lineas.add('ULTIMOS TURNOS:');
 
       if (sesionesCaja.isEmpty) {
-        lineas.add('No hay sesiones registradas.');
+        lineas.add('Sin sesiones registradas.');
       } else {
         for (final s in sesionesCaja) {
           final sm = s as Map;
           final idS = sm['id'] ?? 0;
-          final nomCaja = sm['nombre_caja'] ?? 'Caja 1 - Principal';
-          final nomCajero = sm['cajero'] ?? 'Administrador';
+          final nomCajero = sm['cajero'] ?? sm['cajero_nombre'] ?? 'Administrador';
           final estado = sm['estado'] ?? 'Abierta';
           final base = (sm['monto_inicial'] as num?)?.toDouble() ?? 0.0;
           final finalArqueo = (sm['monto_final'] as num?)?.toDouble() ?? 0.0;
 
-          // Se divide en dos líneas para evitar recorte en el margen derecho
-          lineas.add('Turno #$idS | $nomCaja');
-          lineas.add('  Cajero: $nomCajero | Estado: $estado');
-          lineas.add('  Base: Bs.${base.toStringAsFixed(1)} | Final: Bs.${finalArqueo.toStringAsFixed(1)}');
-          lineas.add(div);
+          lineas.add(
+            '#$idS ${_limpiarTextoPdf(nomCajero.toString())} ($estado) B:${base.toStringAsFixed(0)} F:${finalArqueo.toStringAsFixed(0)}',
+          );
         }
       }
 
-      lineas.add('RECAUDACION DETALLADA POR CAJERO:');
+      lineas.add(_separadorEstandarPdf);
+      lineas.add('DETALLE POR CAJERA:');
       if (resumenPorCajero.isEmpty) {
-        lineas.add('No hay ventas registradas.');
+        lineas.add('Sin ventas registradas.');
       } else {
         resumenPorCajero.forEach((cajero, datos) {
-          lineas.add(div);
-          lineas.add('CAJERO: ${_limpiarTextoPdf(cajero)}');
-          lineas.add(' - Ventas: ${datos['ventas']}');
-          lineas.add(' - Total Recaudado: Bs. ${(datos['total'] as double).toStringAsFixed(2)}');
-          lineas.add('   * Efectivo: Bs. ${(datos['efectivo'] as double).toStringAsFixed(2)}');
-          lineas.add('   * Pagos QR: Bs. ${(datos['qr'] as double).toStringAsFixed(2)}');
+          lineas.add('Cajera: ${_limpiarTextoPdf(cajero)} (${datos['ventas']} vts)');
+          lineas.add('Efectivo: Bs. ${(datos['efectivo'] as double).toStringAsFixed(2)}');
+          lineas.add('Pago QR:  Bs. ${(datos['qr'] as double).toStringAsFixed(2)}');
+          lineas.add('Total:    Bs. ${(datos['total'] as double).toStringAsFixed(2)}');
+          lineas.add(_separadorEstandarPdf);
         });
       }
 
-      lineas.add('==================================');
-      lineas.add(' DOCUMENTO OFICIAL DE CONTROL GENERAL ');
-
-      // Se reduce la fuente a 6 puntos para ganar espacio horizontal
-      final int altoPagina = 200 + (lineas.length * 11); // Espaciado vertical reducido
-      final StringBuffer contenidoStream = StringBuffer();
-      contenidoStream.writeln('BT');
-      contenidoStream.writeln('/F1 6 Tf'); // FUENTE REDUCIDA A 6 PUNTOS
-      int yPos = altoPagina - 20;
-      for (final l in lineas) {
-        // Se mantiene el margen izquierdo en 12, el Courier de 6pt cabe en 226px
-        contenidoStream.writeln('12 $yPos Td');
-        contenidoStream.writeln('($l) Tj');
-        contenidoStream.writeln('-12 -$yPos Td');
-        yPos -= 10; // Espaciado entre líneas reducido
-      }
-      contenidoStream.writeln('ET');
-
-      final String streamStr = contenidoStream.toString();
-      final List<String> objetos = [
-        '1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n',
-        '2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n',
-        '3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 226 $altoPagina] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n',
-        '4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>\nendobj\n',
-        '5 0 obj\n<< /Length ${streamStr.length} >>\nstream\n$streamStr\nendstream\nendobj\n',
-      ];
-
-      final StringBuffer pdfBuffer = StringBuffer();
-      pdfBuffer.write('%PDF-1.4\n');
-      final List<int> offsets = [];
-      for (final obj in objetos) {
-        offsets.add(pdfBuffer.toString().length);
-        pdfBuffer.write(obj);
-      }
-      final int xrefStart = pdfBuffer.toString().length;
-      pdfBuffer.write('xref\n0 ${objetos.length + 1}\n');
-      pdfBuffer.write('0000000000 65535 f \n');
-      for (final off in offsets) {
-        pdfBuffer.write('${off.toString().padLeft(10, '0')} 00000 n \n');
-      }
-      pdfBuffer.write('trailer\n<< /Size ${objetos.length + 1} /Root 1 0 R >>\n');
-      pdfBuffer.write('startxref\n$xrefStart\n%%EOF');
+      final bytesPdf = _generarBytesPdfEstandarCompacto(lineas);
 
       final dirTemp = Directory.systemTemp;
       final rutaPdf = p.join(dirTemp.path, 'informe_general_caja_${DateTime.now().millisecondsSinceEpoch}.pdf');
-      await File(rutaPdf).writeAsBytes(latin1.encode(pdfBuffer.toString()), flush: true);
+      await File(rutaPdf).writeAsBytes(bytesPdf, flush: true);
 
       if (Platform.isWindows) {
         await Process.run('cmd', ['/c', 'start', '', rutaPdf]);
@@ -917,6 +1593,7 @@ Future<void> _generarInformeGeneralCajaPdf() async {
       );
     }
   }
+
   Future<void> _verificarEstadoCajaSQLite() async {
     try {
       final db = await _dbService.database;
@@ -952,7 +1629,7 @@ Future<void> _generarInformeGeneralCajaPdf() async {
       if (sesionesAbiertas.isNotEmpty) {
         final sesion = sesionesAbiertas.first as Map;
         final fechaAperturaSesion = sesion['fecha_apertura']?.toString() ?? '';
-        
+
         bool esDeOtroDia = false;
         if (fechaAperturaSesion.isNotEmpty) {
           try {
@@ -1087,6 +1764,7 @@ Future<void> _generarInformeGeneralCajaPdf() async {
               categoria: cat,
               stock: stock,
               emojiPersonalizado: _emojisProductosCustom[id.toString()],
+              imagenPath: _imagenesProductosCustom[id.toString()],
             ),
           );
         }
@@ -1261,6 +1939,60 @@ Future<void> _generarInformeGeneralCajaPdf() async {
       return;
     }
 
+    // Si el método es QR, abrimos el modal de escucha en tiempo real por UDP (ASyape)
+    if (_metodoPagoSeleccionado == 'QR') {
+      await _abrirModalEsperaYapeQr();
+      return;
+    }
+
+    await _ejecutarRegistroYReciboVenta();
+  }
+
+  Future<void> _abrirModalEsperaYapeQr() async {
+    final double montoEsperado = totalCarrito;
+    if (montoEsperado <= 0) return;
+
+    _modalEsperaYapeAbierto = true;
+    YapeUdpReceptor.instance.iniciarEscucha(puerto: 45455);
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext dialogContext) {
+        return DialogoCobroYapeRealtime(
+          montoEsperado: montoEsperado,
+          nombreNegocio: _configNegocio['nombre_negocio'] ?? 'AScafe',
+          onPagoConfirmado: (EventoPagoYape pago) {
+            _modalEsperaYapeAbierto = false;
+            Navigator.of(dialogContext).pop();
+            if (!mounted) return;
+            setState(() {
+              _metodoPagoSeleccionado = 'QR';
+              if (pago.pagador.isNotEmpty &&
+                  pago.pagador != 'Cliente Yape QR' &&
+                  pago.pagador != 'Verificación Manual en Caja' &&
+                  (_ctrlClienteNombre.text.trim().isEmpty ||
+                      _ctrlClienteNombre.text.trim() == 'Cliente Casual')) {
+                _ctrlClienteNombre.text = pago.pagador;
+              }
+            });
+            _ejecutarRegistroYReciboVenta();
+          },
+          onCancelar: () {
+            _modalEsperaYapeAbierto = false;
+            Navigator.of(dialogContext).pop();
+          },
+        );
+      },
+    ).then((_) {
+      _modalEsperaYapeAbierto = false;
+    });
+  }
+
+  Future<void> _ejecutarRegistroYReciboVenta() async {
+    final messenger = ScaffoldMessenger.of(context);
+    if (carrito.isEmpty) return;
+
     try {
       final List detallesVenta = carrito.map((item) {
         return {
@@ -1348,7 +2080,9 @@ Future<void> _generarInformeGeneralCajaPdf() async {
 
   void _mostrarDialogoTicketVenta(Map<String, dynamic> ticket) {
     final List items = ticket['items'] as List;
-    final nombreNeg = _configNegocio['nombre_negocio'] ?? 'AScafe';
+    final String tituloCentrado = _formatearTituloNegocioConTelefono();
+    final String dirNeg = _configNegocio['direccion_negocio'] ?? '';
+    final String modalidadTexto = _formatearModalidadTicket(ticket);
 
     showDialog(
       context: context,
@@ -1364,29 +2098,29 @@ Future<void> _generarInformeGeneralCajaPdf() async {
             children: [
               const Row(
                 children: [
-                  Text('🧾 ', style: TextStyle(fontSize: 22)),
+                  Text('🧾 ', style: TextStyle(fontSize: 18)),
                   Text(
-                    'Nota de Venta / Recibo PDF',
-                    style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 17),
+                    'Comprobante Compacto',
+                    style: TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 16),
                   ),
                 ],
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
                   color: Colors.green.withOpacity(0.2),
                   borderRadius: BorderRadius.circular(6),
                 ),
                 child: Text(
-                  'Recibo #${ticket['venta_id']}',
+                  '#${ticket['venta_id']}',
                   style: const TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold),
                 ),
               ),
             ],
           ),
           content: Container(
-            width: 390,
-            padding: const EdgeInsets.all(16),
+            width: 350,
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(
               color: const Color(0xFF0A0F1D),
               borderRadius: BorderRadius.circular(10),
@@ -1395,98 +2129,95 @@ Future<void> _generarInformeGeneralCajaPdf() async {
             child: SingleChildScrollView(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Center(
-                    child: Text(
-                      '☕ $nombreNeg 🥟',
-                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 15),
-                    ),
-                  ),
-                  Center(
-                    child: Text(
-                      _configNegocio['direccion_negocio'] ?? '',
-                      style: const TextStyle(color: Colors.grey, fontSize: 11),
-                    ),
-                  ),
-                  const Divider(color: Colors.white24, height: 18),
-                  Text('📅 Fecha y Hora: ${ticket['fecha']}', style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)),
-                  Text('🖥️ Caja: ${ticket['nombre_caja']}', style: const TextStyle(color: Color(0xFFFFAB00), fontSize: 12, fontWeight: FontWeight.bold)),
-                  Text('👤 Cajero: ${ticket['cajero']}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
-                  Text('🪪 Cliente: ${ticket['cliente']} | NIT/CI: ${ticket['nit_ci']}', style: const TextStyle(color: Colors.white70, fontSize: 12)),
                   Text(
-                    '💳 Forma de Pago: ${ticket['metodo_pago']}',
-                    style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 13, fontWeight: FontWeight.bold),
+                    tituloCentrado,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
                   ),
-                  const Divider(color: Colors.white24, height: 18),
-                  const Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Expanded(flex: 5, child: Text('PRODUCTO', style: TextStyle(color: Color(0xFFFFAB00), fontSize: 11, fontWeight: FontWeight.bold))),
-                      Expanded(flex: 2, child: Text('CANT', textAlign: TextAlign.center, style: TextStyle(color: Color(0xFFFFAB00), fontSize: 11, fontWeight: FontWeight.bold))),
-                      Expanded(flex: 3, child: Text('SUBTOTAL', textAlign: TextAlign.right, style: TextStyle(color: Color(0xFFFFAB00), fontSize: 11, fontWeight: FontWeight.bold))),
-                    ],
+                  if (dirNeg.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        dirNeg,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.white70, fontSize: 13.5),
+                      ),
+                    ),
+                  const Divider(color: Colors.white24, height: 14),
+                  Text(
+                    'Recibo #${ticket['venta_id']} | ${ticket['fecha']}',
+                    style: const TextStyle(color: Colors.white, fontSize: 13.5, fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(height: 6),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Cajera: ${ticket['cajero']}',
+                    style: const TextStyle(color: Colors.white70, fontSize: 13.5, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Forma de Pago: ${ticket['metodo_pago']}',
+                    style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 13.5, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    'Pedido: $modalidadTexto',
+                    style: const TextStyle(color: Color(0xFFFFAB00), fontSize: 13.5, fontWeight: FontWeight.bold),
+                  ),
+                  const Divider(color: Colors.white24, height: 14),
                   ...items.map((it) {
                     final m = it as Map;
                     return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      padding: const EdgeInsets.symmetric(vertical: 2),
                       child: Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
                           Expanded(
-                            flex: 5,
                             child: Text(
-                              '${m['nombre']}',
-                              style: const TextStyle(color: Colors.white, fontSize: 12),
+                              '${m['cantidad']}x ${m['nombre']}',
+                              style: const TextStyle(color: Colors.white, fontSize: 13.5),
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
-                          Expanded(
-                            flex: 2,
-                            child: Text(
-                              'x${m['cantidad']}',
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.white70, fontSize: 12),
-                            ),
-                          ),
-                          Expanded(
-                            flex: 3,
-                            child: Text(
-                              'Bs. ${(m['subtotal'] as num).toStringAsFixed(2)}',
-                              textAlign: TextAlign.right,
-                              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold),
+                          Text(
+                            'Bs. ${(m['subtotal'] as num).toStringAsFixed(2)}',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.bold,
                             ),
                           ),
                         ],
                       ),
                     );
                   }),
-                  const Divider(color: Colors.white24, height: 18),
+                  const Divider(color: Colors.white24, height: 14),
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
-                      const Text('TOTAL PAGADO:', style: TextStyle(color: Color(0xFF00E5FF), fontSize: 15, fontWeight: FontWeight.bold)),
-                      Text('Bs. ${(ticket['total'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 16, fontWeight: FontWeight.bold)),
+                      const Text(
+                        'TOTAL PAGADO:',
+                        style: TextStyle(
+                          color: Color(0xFFFFAB00),
+                          fontSize: 15.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      Text(
+                        'Bs. ${(ticket['total'] as num).toStringAsFixed(2)}',
+                        style: const TextStyle(
+                          color: Color(0xFF00E5FF),
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
                     ],
                   ),
-                  if (ticket['metodo_pago'] == 'Efectivo') ...[
-                    const SizedBox(height: 4),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Efectivo Recibido:', style: TextStyle(color: Colors.white60, fontSize: 12)),
-                        Text('Bs. ${(ticket['efectivo'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.white60, fontSize: 12)),
-                      ],
-                    ),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        const Text('Cambio / Vuelto:', style: TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold)),
-                        Text('Bs. ${(ticket['cambio'] as num).toStringAsFixed(2)}', style: const TextStyle(color: Colors.greenAccent, fontSize: 12, fontWeight: FontWeight.bold)),
-                      ],
-                    ),
-                  ],
                 ],
               ),
             ),
@@ -1498,8 +2229,8 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                 foregroundColor: Colors.black,
               ),
               onPressed: () => _generarEImprimirReciboPdf(ticket),
-              icon: const Icon(Icons.picture_as_pdf, size: 18),
-              label: const Text('Reimprimir PDF', style: TextStyle(fontWeight: FontWeight.bold)),
+              icon: const Icon(Icons.picture_as_pdf, size: 16),
+              label: const Text('Reimprimir PDF', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
             ),
             ElevatedButton.icon(
               style: ElevatedButton.styleFrom(
@@ -1507,8 +2238,8 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                 foregroundColor: Colors.black,
               ),
               onPressed: () => Navigator.of(dialogContext).pop(),
-              icon: const Icon(Icons.check_circle_outline, size: 18),
-              label: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.bold)),
+              icon: const Icon(Icons.check_circle_outline, size: 16),
+              label: const Text('Cerrar', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
             ),
           ],
         );
@@ -1542,12 +2273,41 @@ Future<void> _generarInformeGeneralCajaPdf() async {
         : listaCategoriasSelector.first;
 
     String emojiElegido = esEdicion ? _obtenerEmojiProducto(productoExistente) : '🥟';
+    String rutaImagenElegida = esEdicion
+        ? (_imagenesProductosCustom[productoExistente.id.toString()] ?? productoExistente.imagenPath ?? '')
+        : '';
 
     showDialog(
       context: context,
       builder: (dialogContext) {
         return StatefulBuilder(
           builder: (sbContext, setStateDialog) {
+            Future<void> seleccionarFotografiaProducto() async {
+              try {
+                FilePickerResult? result = await FilePicker.platform.pickFiles(
+                  type: FileType.custom,
+                  allowedExtensions: ['png', 'jpg', 'jpeg', 'webp', 'bmp'],
+                  allowMultiple: false,
+                );
+                if (result != null && result.files.single.path != null) {
+                  setStateDialog(() {
+                    rutaImagenElegida = result.files.single.path!;
+                  });
+                }
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    backgroundColor: Colors.redAccent,
+                    content: Text('Error al seleccionar fotografía: $e'),
+                  ),
+                );
+              }
+            }
+
+            final bool tieneFotoValida =
+                rutaImagenElegida.trim().isNotEmpty && File(rutaImagenElegida.trim()).existsSync();
+
             return AlertDialog(
               backgroundColor: const Color(0xFF0E1626),
               shape: RoundedRectangleBorder(
@@ -1559,19 +2319,117 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                 style: const TextStyle(color: Color(0xFFFFAB00), fontWeight: FontWeight.bold, fontSize: 18),
               ),
               content: SizedBox(
-                width: 440,
+                width: 460,
                 child: SingleChildScrollView(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       const Text(
-                        'Selecciona un Emoji para el Producto:',
+                        '📷 Fotografía Central del Producto (Opcional - Prioritaria sobre Emoji):',
                         style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold),
                       ),
                       const SizedBox(height: 8),
                       Container(
-                        height: 110,
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF131C31),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 72,
+                              height: 72,
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF0A0F1D),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: const Color(0xFFFFAB00), width: 1.5),
+                              ),
+                              child: ClipRRect(
+                                borderRadius: BorderRadius.circular(10),
+                                child: tieneFotoValida
+                                    ? Image.file(
+                                        File(rutaImagenElegida),
+                                        fit: BoxFit.cover,
+                                        width: 72,
+                                        height: 72,
+                                      )
+                                    : Center(
+                                        child: Text(emojiElegido, style: const TextStyle(fontSize: 34)),
+                                      ),
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    tieneFotoValida
+                                        ? p.basename(rutaImagenElegida)
+                                        : 'Usando Emoji ($emojiElegido)',
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 6,
+                                    children: [
+                                      ElevatedButton.icon(
+                                        style: ElevatedButton.styleFrom(
+                                          backgroundColor: const Color(0xFFFFAB00),
+                                          foregroundColor: Colors.black,
+                                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                        ),
+                                        onPressed: seleccionarFotografiaProducto,
+                                        icon: const Icon(Icons.add_a_photo, size: 15),
+                                        label: const Text(
+                                          'Subir Foto...',
+                                          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                        ),
+                                      ),
+                                      if (tieneFotoValida)
+                                        OutlinedButton.icon(
+                                          style: OutlinedButton.styleFrom(
+                                            foregroundColor: Colors.redAccent,
+                                            side: const BorderSide(color: Colors.redAccent),
+                                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                                          ),
+                                          onPressed: () {
+                                            setStateDialog(() {
+                                              rutaImagenElegida = '';
+                                            });
+                                          },
+                                          icon: const Icon(Icons.close, size: 15),
+                                          label: const Text(
+                                            'Quitar Foto',
+                                            style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'O selecciona un Emoji para el Producto:',
+                        style: TextStyle(color: Color(0xFF00E5FF), fontSize: 12, fontWeight: FontWeight.bold),
+                      ),
+                      const SizedBox(height: 6),
+                      Container(
+                        height: 98,
                         padding: const EdgeInsets.all(8),
                         decoration: BoxDecoration(
                           color: const Color(0xFF131C31),
@@ -1604,7 +2462,7 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                           },
                         ),
                       ),
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 12),
                       TextField(
                         controller: ctrlNombre,
                         style: const TextStyle(color: Colors.white),
@@ -1695,6 +2553,9 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                     onPressed: () async {
                       final navigator = Navigator.of(dialogContext);
                       final scaffoldMessenger = ScaffoldMessenger.of(context);
+                      _imagenesProductosCustom.remove(productoExistente.id.toString());
+                      _emojisProductosCustom.remove(productoExistente.id.toString());
+                      await _guardarMesasYMultimediaEnConfiguracion();
                       await _dbService.eliminarProducto(productoExistente.id);
                       navigator.pop();
                       await _cargarDatosDesdeSQLite();
@@ -1730,8 +2591,9 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                     final navigator = Navigator.of(dialogContext);
                     final scaffoldMessenger = ScaffoldMessenger.of(context);
 
+                    int idFinalProducto = esEdicion ? productoExistente.id : 0;
+
                     if (esEdicion) {
-                      _emojisProductosCustom[productoExistente.id.toString()] = emojiElegido;
                       await _dbService.actualizarProducto(
                         productoExistente.id,
                         precio,
@@ -1755,14 +2617,22 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                       );
                       final int catId = catRows.isNotEmpty ? (catRows.first['id'] as num).toInt() : 1;
 
-                      final int nuevoId = await db.insert('productos', {
+                      idFinalProducto = await db.insert('productos', {
                         'categoria_id': catId,
                         'nombre': nombre,
                         'precio': precio,
                         'stock_actual': stock,
                       });
-                      _emojisProductosCustom[nuevoId.toString()] = emojiElegido;
                     }
+
+                    _emojisProductosCustom[idFinalProducto.toString()] = emojiElegido;
+                    if (rutaImagenElegida.trim().isNotEmpty) {
+                      _imagenesProductosCustom[idFinalProducto.toString()] = rutaImagenElegida.trim();
+                    } else {
+                      _imagenesProductosCustom.remove(idFinalProducto.toString());
+                    }
+
+                    await _guardarMesasYMultimediaEnConfiguracion();
 
                     navigator.pop();
                     await _cargarDatosDesdeSQLite();
@@ -1771,7 +2641,7 @@ Future<void> _generarInformeGeneralCajaPdf() async {
                     scaffoldMessenger.showSnackBar(
                       SnackBar(
                         backgroundColor: Colors.green,
-                        content: Text('$emojiElegido "$nombre" guardado correctamente.'),
+                        content: Text('✅ "$nombre" guardado con su ilustración correctamente.'),
                       ),
                     );
                   },
@@ -1784,7 +2654,7 @@ Future<void> _generarInformeGeneralCajaPdf() async {
     );
   }
 
-void _mostrarDialogoControlCaja() {
+  void _mostrarDialogoControlCaja() {
     final ctrlMontoInicial = TextEditingController(text: _montoInicialCaja.toStringAsFixed(2));
     final aperturaCorta = _fechaAperturaCaja.isNotEmpty
         ? _fechaAperturaCaja.split('T').first
@@ -2069,6 +2939,16 @@ void _mostrarDialogoControlCaja() {
           ],
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              _pantallaCompletaActiva ? Icons.fullscreen_exit : Icons.fullscreen,
+              color: const Color(0xFF00E5FF),
+            ),
+            tooltip: _pantallaCompletaActiva
+                ? 'Mostrar Barra de Tareas de Windows (F11)'
+                : 'Ocultar Barra de Tareas y Expandir al 100% (F11)',
+            onPressed: () => _activarPantallaCompletaInmersiva(forzarMaximizado: false),
+          ),
           if (_ultimoTicketGenerado != null)
             IconButton(
               icon: const Icon(Icons.picture_as_pdf, color: Color(0xFF00E5FF)),
@@ -2078,7 +2958,7 @@ void _mostrarDialogoControlCaja() {
           if (_esAdminActivo) ...[
             IconButton(
               icon: const Icon(Icons.store, color: Color(0xFFFFAB00)),
-              tooltip: 'Configurar Establecimiento y Logo',
+              tooltip: 'Configurar Establecimiento, Logo y Correo QR',
               onPressed: _mostrarDialogoConfiguracionNegocio,
             ),
             IconButton(
@@ -2095,7 +2975,7 @@ void _mostrarDialogoControlCaja() {
           if (_esAdminActivo)
             IconButton(
               icon: const Icon(Icons.admin_panel_settings, color: Color(0xFFFFAB00)),
-              tooltip: 'Panel de Administración, Cajeros y Fábrica',
+              tooltip: 'Gestionar Cajeros, Contraseñas e Inventario',
               onPressed: () async {
                 await Navigator.push(
                   context,
@@ -2168,38 +3048,38 @@ void _mostrarDialogoControlCaja() {
                   ),
                 ),
                 Container(
-                height: 54,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                color: const Color(0xFF0E1626),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: categorias.map((cat) {
-                    final bool seleccionado = categoriaSeleccionada == cat;
-                    final String emojiCat = _obtenerEmojiCategoria(cat);
+                  height: 54,
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  color: const Color(0xFF0E1626),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: categorias.map((cat) {
+                      final bool seleccionado = categoriaSeleccionada == cat;
+                      final String emojiCat = _obtenerEmojiCategoria(cat);
 
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-                      child: Tooltip(
-                        message: cat,
-                        child: ChoiceChip(
-                          label: Text(
-                            emojiCat,
-                            style: const TextStyle(fontSize: 18),
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
+                        child: Tooltip(
+                          message: cat,
+                          child: ChoiceChip(
+                            label: Text(
+                              emojiCat,
+                              style: const TextStyle(fontSize: 18),
+                            ),
+                            selected: seleccionado,
+                            selectedColor: const Color(0xFFFFAB00),
+                            backgroundColor: const Color(0xFF131C31),
+                            onSelected: (_) {
+                              setState(() {
+                                categoriaSeleccionada = cat;
+                              });
+                            },
                           ),
-                          selected: seleccionado,
-                          selectedColor: const Color(0xFFFFAB00),
-                          backgroundColor: const Color(0xFF131C31),
-                          onSelected: (_) {
-                            setState(() {
-                              categoriaSeleccionada = cat;
-                            });
-                          },
                         ),
-                      ),
-                    );
-                  }).toList(),
+                      );
+                    }).toList(),
+                  ),
                 ),
-              ),
                 Expanded(
                   child: cargandoProductos
                       ? const Center(child: CircularProgressIndicator(color: Color(0xFFFFAB00)))
@@ -2214,14 +3094,13 @@ void _mostrarDialogoControlCaja() {
                               padding: const EdgeInsets.all(12),
                               gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                                 crossAxisCount: 3,
-                                childAspectRatio: 1.25,
-                                crossAxisSpacing: 10,
-                                mainAxisSpacing: 10,
+                                childAspectRatio: 0.96,
+                                crossAxisSpacing: 12,
+                                mainAxisSpacing: 12,
                               ),
                               itemCount: productosFiltrados.length,
                               itemBuilder: (context, index) {
                                 final producto = productosFiltrados[index];
-                                final emojiProd = _obtenerEmojiProducto(producto);
                                 final sinStock = producto.stock <= 0;
                                 final stockBajo = producto.stock > 0 && producto.stock <= 5;
 
@@ -2230,71 +3109,64 @@ void _mostrarDialogoControlCaja() {
                                   onLongPress: _esAdminActivo
                                       ? () => _mostrarDialogoCrearEditarProducto(productoExistente: producto)
                                       : null,
-                                  borderRadius: BorderRadius.circular(12),
+                                  borderRadius: BorderRadius.circular(14),
                                   child: Container(
                                     decoration: BoxDecoration(
                                       color: sinStock
                                           ? const Color(0xFF131C31).withOpacity(0.45)
                                           : const Color(0xFF131C31),
-                                      borderRadius: BorderRadius.circular(12),
+                                      borderRadius: BorderRadius.circular(14),
                                       border: Border.all(
                                         color: sinStock
                                             ? Colors.redAccent.withOpacity(0.4)
-                                            : const Color(0xFFFFAB00).withOpacity(0.45),
-                                        width: 1.2,
+                                            : const Color(0xFFFFAB00).withOpacity(0.55),
+                                        width: 1.3,
                                       ),
                                     ),
-                                    padding: const EdgeInsets.all(10),
+                                    padding: const EdgeInsets.fromLTRB(10, 8, 10, 10),
                                     child: Column(
-                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      crossAxisAlignment: CrossAxisAlignment.stretch,
                                       children: [
                                         Row(
                                           crossAxisAlignment: CrossAxisAlignment.start,
                                           children: [
-                                            Container(
-                                              padding: const EdgeInsets.all(6),
-                                              decoration: BoxDecoration(
-                                                color: const Color(0xFF0A0F1D),
-                                                borderRadius: BorderRadius.circular(8),
-                                              ),
-                                              child: Text(emojiProd, style: const TextStyle(fontSize: 24)),
-                                            ),
-                                            const SizedBox(width: 8),
                                             Expanded(
-                                              child: Column(
-                                                crossAxisAlignment: CrossAxisAlignment.start,
-                                                children: [
-                                                  Text(
-                                                    producto.nombre,
-                                                    style: const TextStyle(
-                                                      color: Colors.white,
-                                                      fontWeight: FontWeight.bold,
-                                                      fontSize: 13,
-                                                    ),
-                                                    maxLines: 2,
-                                                    overflow: TextOverflow.ellipsis,
-                                                  ),
-                                                  const SizedBox(height: 2),
-                                                  Text(
-                                                    producto.categoria,
-                                                    style: const TextStyle(color: Colors.grey, fontSize: 10),
-                                                    maxLines: 1,
-                                                    overflow: TextOverflow.ellipsis,
-                                                  ),
-                                                ],
+                                              child: Text(
+                                                producto.nombre,
+                                                textAlign: TextAlign.center,
+                                                style: const TextStyle(
+                                                  color: Colors.white,
+                                                  fontWeight: FontWeight.bold,
+                                                  fontSize: 13,
+                                                ),
+                                                maxLines: 1,
+                                                overflow: TextOverflow.ellipsis,
                                               ),
                                             ),
                                             if (_esAdminActivo)
                                               InkWell(
-                                                onTap: () => _mostrarDialogoCrearEditarProducto(productoExistente: producto),
+                                                onTap: () => _mostrarDialogoCrearEditarProducto(
+                                                  productoExistente: producto,
+                                                ),
                                                 child: const Padding(
-                                                  padding: EdgeInsets.all(2),
-                                                  child: Icon(Icons.edit_note, color: Colors.white54, size: 18),
+                                                  padding: EdgeInsets.only(left: 4),
+                                                  child: Icon(
+                                                    Icons.edit_note,
+                                                    color: Colors.white54,
+                                                    size: 18,
+                                                  ),
                                                 ),
                                               ),
                                           ],
                                         ),
+                                        const SizedBox(height: 6),
+                                        Expanded(
+                                          child: Padding(
+                                            padding: const EdgeInsets.symmetric(horizontal: 6),
+                                            child: _construirIlustracionCentralProminente(producto),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
                                         Row(
                                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                           children: [
@@ -2370,18 +3242,17 @@ void _mostrarDialogoControlCaja() {
                         ),
                     ],
                   ),
-                  SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: ['Para Llevar', 'Mesa', 'Delivery'].map((modo) {
-                        final sel = _tipoPedido == modo;
-                        final icono = modo == 'Para Llevar'
-                            ? '🛍️'
-                            : modo == 'Mesa'
-                                ? '🍽️'
-                                : '🛵';
-                        return Padding(
-                          padding: const EdgeInsets.only(right: 6),
+                  Row(
+                    children: ['Para Llevar', 'Mesa', 'Delivery'].map((modo) {
+                      final sel = _tipoPedido == modo;
+                      final icono = modo == 'Para Llevar'
+                          ? '🛍️'
+                          : modo == 'Mesa'
+                              ? '🍽️'
+                              : '🛵';
+                      return Expanded(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 3),
                           child: ChoiceChip(
                             label: Text('$icono $modo', style: const TextStyle(fontSize: 11)),
                             selected: sel,
@@ -2391,10 +3262,143 @@ void _mostrarDialogoControlCaja() {
                               color: sel ? Colors.black : Colors.white70,
                               fontWeight: FontWeight.bold,
                             ),
-                            onSelected: (_) => setState(() => _tipoPedido = modo),
+                            onSelected: (_) {
+                              setState(() {
+                                _tipoPedido = modo;
+                                if (!_listaMesas.contains(_numeroMesa) && _listaMesas.isNotEmpty) {
+                                  _numeroMesa = _listaMesas.first;
+                                }
+                              });
+                            },
                           ),
-                        );
-                      }).toList(),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                  const SizedBox(height: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF131C31),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: _tipoPedido == 'Mesa'
+                            ? const Color(0xFFFFAB00)
+                            : Colors.white24,
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        const Text(
+                          '🍽️ N° Mesa:',
+                          style: TextStyle(
+                            color: Color(0xFFFFAB00),
+                            fontSize: 12,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Container(
+                            height: 30,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF0A0F1D),
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.white24),
+                            ),
+                            child: DropdownButtonHideUnderline(
+                              child: DropdownButton<String>(
+                                value: _listaMesas.contains(_numeroMesa) ? _numeroMesa : _listaMesas.first,
+                                dropdownColor: const Color(0xFF131C31),
+                                isExpanded: true,
+                                icon: const Icon(Icons.arrow_drop_down, color: Color(0xFFFFAB00), size: 18),
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                                items: _listaMesas.map((String numM) {
+                                  return DropdownMenuItem<String>(
+                                    value: numM,
+                                    child: Text('Mesa $numM'),
+                                  );
+                                }).toList(),
+                                onChanged: (val) {
+                                  if (val != null) {
+                                    setState(() {
+                                      _numeroMesa = val;
+                                      _tipoPedido = 'Mesa';
+                                    });
+                                  }
+                                },
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Tooltip(
+                          message: 'Aumentar Mesa (+)',
+                          child: InkWell(
+                            onTap: _agregarNuevaMesa,
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              height: 30,
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              decoration: BoxDecoration(
+                                color: Colors.green.withOpacity(0.25),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: Colors.greenAccent),
+                              ),
+                              child: const Row(
+                                children: [
+                                  Icon(Icons.add, color: Colors.greenAccent, size: 16),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'Mesa',
+                                    style: TextStyle(
+                                      color: Colors.greenAccent,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Tooltip(
+                          message: 'Borrar / Disminuir Mesa (-)',
+                          child: InkWell(
+                            onTap: _eliminarMesaActual,
+                            borderRadius: BorderRadius.circular(6),
+                            child: Container(
+                              height: 30,
+                              padding: const EdgeInsets.symmetric(horizontal: 10),
+                              decoration: BoxDecoration(
+                                color: Colors.red.withOpacity(0.25),
+                                borderRadius: BorderRadius.circular(6),
+                                border: Border.all(color: Colors.redAccent),
+                              ),
+                              child: const Row(
+                                children: [
+                                  Icon(Icons.remove, color: Colors.redAccent, size: 16),
+                                  SizedBox(width: 2),
+                                  Text(
+                                    'Borrar',
+                                    style: TextStyle(
+                                      color: Colors.redAccent,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   const SizedBox(height: 8),
@@ -2439,7 +3443,7 @@ void _mostrarDialogoControlCaja() {
                       ),
                     ],
                   ),
-                  const Divider(color: Colors.white24, height: 16),
+                  const Divider(color: Colors.white24, height: 14),
                   Expanded(
                     child: carrito.isEmpty
                         ? const Center(
@@ -2460,7 +3464,6 @@ void _mostrarDialogoControlCaja() {
                             itemCount: carrito.length,
                             itemBuilder: (context, index) {
                               final item = carrito[index];
-                              final em = _obtenerEmojiProducto(item.producto);
                               return Card(
                                 color: const Color(0xFF131C31),
                                 margin: const EdgeInsets.symmetric(vertical: 4),
@@ -2468,7 +3471,7 @@ void _mostrarDialogoControlCaja() {
                                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                                   child: Row(
                                     children: [
-                                      Text(em, style: const TextStyle(fontSize: 20)),
+                                      _construirIlustracionMiniaturaCarrito(item.producto),
                                       const SizedBox(width: 8),
                                       Expanded(
                                         child: Column(
@@ -2656,7 +3659,7 @@ void _mostrarDialogoControlCaja() {
                       minimumSize: const Size(double.infinity, 48),
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                     ),
-                    onPressed: _procesarPago, // 👈 Aquí se enlaza correctamente la función
+                    onPressed: _procesarPago,
                     icon: const Icon(Icons.picture_as_pdf, size: 20),
                     label: const Text(
                       'COBRAR E IMPRIMIR RECIBO PDF',
@@ -2669,6 +3672,181 @@ void _mostrarDialogoControlCaja() {
           ),
         ],
       ),
+    );
+  }
+}
+
+class DialogoCobroYapeRealtime extends StatefulWidget {
+  final double montoEsperado;
+  final String nombreNegocio;
+  final void Function(EventoPagoYape pago) onPagoConfirmado;
+  final VoidCallback onCancelar;
+
+  const DialogoCobroYapeRealtime({
+    super.key,
+    required this.montoEsperado,
+    required this.nombreNegocio,
+    required this.onPagoConfirmado,
+    required this.onCancelar,
+  });
+
+  @override
+  State<DialogoCobroYapeRealtime> createState() => _DialogoCobroYapeRealtimeState();
+}
+
+class _DialogoCobroYapeRealtimeState extends State<DialogoCobroYapeRealtime> {
+  StreamSubscription? _suscripcionUdp;
+  String _estadoMensaje = 'Escuchando red Wi-Fi local (Puerto UDP 45455)...';
+  Color _colorEstado = Colors.white70;
+
+  @override
+  void initState() {
+    super.initState();
+    _iniciarEscuchaUdp();
+  }
+
+  void _iniciarEscuchaUdp() {
+    YapeUdpReceptor.instance.iniciarEscucha(puerto: 45455);
+
+    _suscripcionUdp = YapeUdpReceptor.instance.flujoPagos.listen((dynamic evento) {
+      if (evento is EventoPagoYape) {
+        final double diferencia = (evento.monto - widget.montoEsperado).abs();
+
+        if (diferencia < 0.015) {
+          _suscripcionUdp?.cancel();
+          widget.onPagoConfirmado(evento);
+        } else {
+          if (mounted) {
+            setState(() {
+              _colorEstado = Colors.orangeAccent;
+              _estadoMensaje =
+                  'Abono detectado de ${evento.pagador} por Bs. ${evento.monto.toStringAsFixed(2)} (Esperando Bs. ${widget.montoEsperado.toStringAsFixed(2)})';
+            });
+          }
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _suscripcionUdp?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      backgroundColor: const Color(0xFF0E1626),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0xFFFFAB00), width: 1.5),
+      ),
+      title: Row(
+        children: [
+          const Icon(Icons.qr_code_scanner, color: Color(0xFF00E5FF), size: 28),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Esperando Pago Yape QR en Tiempo Real',
+                  style: TextStyle(color: Colors.white, fontSize: 17, fontWeight: FontWeight.bold),
+                ),
+                Text(
+                  widget.nombreNegocio,
+                  style: const TextStyle(color: Color(0xFFFFAB00), fontSize: 11),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+      content: SizedBox(
+        width: 430,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'El comprobante se emitirá e imprimirá automáticamente apenas el celular detecte el abono exacto de Yape.',
+              style: TextStyle(color: Colors.white70, fontSize: 12.5),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(18),
+              decoration: BoxDecoration(
+                color: const Color(0xFF131C31),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFFAB00)),
+              ),
+              child: Column(
+                children: [
+                  const Text(
+                    'TOTAL EXACTO A RECIBIR',
+                    style: TextStyle(fontSize: 11, color: Colors.white54, letterSpacing: 1),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    'Bs. ${widget.montoEsperado.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      fontSize: 34,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF00E5FF),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+            const CircularProgressIndicator(color: Color(0xFFFFAB00)),
+            const SizedBox(height: 14),
+            Text(
+              _estadoMensaje,
+              textAlign: TextAlign.center,
+              style: TextStyle(color: _colorEstado, fontSize: 12.5, fontWeight: FontWeight.w600),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () {
+            _suscripcionUdp?.cancel();
+            widget.onCancelar();
+          },
+          child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
+        ),
+        ElevatedButton.icon(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.green,
+            foregroundColor: Colors.white,
+          ),
+          onPressed: () {
+            _suscripcionUdp?.cancel();
+            widget.onPagoConfirmado(
+              EventoPagoYape(
+                id: 'MANUAL-${DateTime.now().millisecondsSinceEpoch}',
+                origen: 'CAJA_MANUAL',
+                empresa: 'Avrora Soft - Vibola LLC',
+                monto: widget.montoEsperado,
+                moneda: 'BOB',
+                pagador: 'Verificación Manual en Caja',
+                titulo: 'Aprobación Manual',
+                mensaje: 'Aprobado directamente por cajero',
+                fechaHora: DateTime.now(),
+              ),
+            );
+          },
+          icon: const Icon(Icons.check_circle_outline, size: 18),
+          label: const Text(
+            'Confirmar Manualmente',
+            style: TextStyle(fontWeight: FontWeight.bold),
+          ),
+        ),
+      ],
     );
   }
 }

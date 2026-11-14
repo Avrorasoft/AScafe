@@ -1,0 +1,10 @@
+{
+  "sistema": "AScafe",
+  "cliente": "AScafe Principal - Riberalta",
+  "uid": "56C58ECF-C4D6-4343-8FB3-CDF1327A1C8F",
+  "emitido": "2026-11-13T21:26:56.917225",
+  "expiracion": "PERPETUA",
+  "modulo_contaduria": true,
+  "tipo_licencia": "COMERCIAL_FULL_CONTADURIA",
+  "firma": "F4A39FBC80E5E2D4CB12505A3F0190760754736C172F55A16C9ED69B38232A50"
+}

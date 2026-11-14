@@ -1,4 +1,4 @@
-name: salteceria_pos
+name: ascafe
 description: "Sistema de administración y punto de venta para cafés en Flutter Desktop."
 publish_to: "none"
 version: 1.0.0+1
@@ -22,11 +22,22 @@ dependencies:
   crypto: ^3.0.8
   device_info_plus: ^10.1.2
   url_launcher: ^6.2.4
+  enough_mail: ^2.1.6
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/logo.png
+
+flutter_launcher_icons:
+  image_path: "assets/logo.png"
+  windows:
+    generate: true
+    image_path: "assets/logo.png"
+    icon_size: 48

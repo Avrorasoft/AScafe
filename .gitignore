@@ -4,3 +4,7 @@ build/
 windows/flutter/ephemeral/
 *.db
 *.db-journal
+
+/Output/
+/installer_output/
+*.exe

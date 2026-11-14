@@ -1,59 +1,55 @@
 // Nombre del archivo: lib/services/database_service.dart
-import 'dart:async';
+
 import 'dart:io';
-import 'package:sqflite/sqflite.dart';
-import 'package:path/path.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:path/path.dart' as p;
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class DatabaseService {
-  static final DatabaseService instance = DatabaseService._init();
+  static final DatabaseService instance = DatabaseService._internal();
   static Database? _database;
 
-  DatabaseService._init();
+  DatabaseService._internal();
 
   Future get database async {
     if (_database != null) return _database!;
-    _database = await _initDB('salteceria.db');
+    _database = await _initDatabase();
     return _database!;
   }
 
-  Future _initDB(String filePath) async {
-    final directorioDocs = await getApplicationDocumentsDirectory();
-    final rutaDirectorio = join(directorioDocs.path, 'AScafe_Data');
+  Future _initDatabase() async {
+    sqfliteFfiInit();
+    final databaseFactory = databaseFactoryFfi;
 
-    await Directory(rutaDirectorio).create(recursive: true);
+    final String dbDir = p.join(Directory.current.path, 'data_ascafe');
+    final Directory dir = Directory(dbDir);
+    if (!dir.existsSync()) {
+      dir.createSync(recursive: true);
+    }
 
-    final path = join(rutaDirectorio, filePath);
+    final String dbPath = p.join(dbDir, 'ascafe_pos.db');
 
-    return await openDatabase(
-      path,
-      version: 1,
-      onCreate: _createDB,
+    return await databaseFactory.openDatabase(
+      dbPath,
+      options: OpenDatabaseOptions(
+        version: 5,
+        onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
+      ),
     );
   }
 
-  Future _createDB(Database db, int version) async {
+  Future _onCreate(Database db, int version) async {
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS configuracion_negocio (
+      CREATE TABLE IF NOT EXISTS configuracion (
         clave TEXT PRIMARY KEY,
         valor TEXT
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS usuarios (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL,
-        password TEXT NOT NULL,
-        rol TEXT NOT NULL,
-        nombre_caja TEXT NOT NULL
-      )
-    ''');
-
-    await db.execute('''
       CREATE TABLE IF NOT EXISTS categorias (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        nombre TEXT NOT NULL
+        nombre TEXT UNIQUE NOT NULL
       )
     ''');
 
@@ -63,20 +59,42 @@ class DatabaseService {
         categoria_id INTEGER,
         nombre TEXT NOT NULL,
         precio REAL NOT NULL,
-        stock INTEGER DEFAULT 0,
         stock_actual INTEGER NOT NULL DEFAULT 0,
-        categoria TEXT DEFAULT 'General',
-        imagen_path TEXT
+        FOREIGN KEY (categoria_id) REFERENCES categorias (id)
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS usuarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'cajero',
+        nombre_caja TEXT DEFAULT 'Caja 1 - Principal',
+        caja_asignada TEXT DEFAULT 'Caja 1 - Principal',
+        activo INTEGER NOT NULL DEFAULT 1
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS caja_sesiones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        cajero_nombre TEXT,
+        nombre_caja TEXT,
+        fecha_apertura TEXT,
+        fecha_cierre TEXT,
+        monto_inicial REAL DEFAULT 0,
+        monto_final REAL DEFAULT 0,
+        estado TEXT DEFAULT 'Abierta'
       )
     ''');
 
     await db.execute('''
       CREATE TABLE IF NOT EXISTS ventas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        total REAL NOT NULL,
-        fecha TEXT NOT NULL,
-        usuario_id INTEGER,
         caja_id INTEGER,
+        fecha TEXT,
+        total REAL,
         metodo_pago TEXT,
         cajero_nombre TEXT,
         nombre_caja TEXT,
@@ -88,289 +106,332 @@ class DatabaseService {
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS caja_sesiones (
+      CREATE TABLE IF NOT EXISTS detalle_ventas (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        cajero_nombre TEXT,
-        nombre_caja TEXT,
-        fecha_apertura TEXT,
-        fecha_cierre TEXT,
-        monto_inicial REAL,
-        monto_final REAL,
-        estado TEXT
+        venta_id INTEGER,
+        producto_id INTEGER,
+        nombre_producto TEXT,
+        cantidad INTEGER,
+        precio_unitario REAL,
+        subtotal REAL,
+        FOREIGN KEY (venta_id) REFERENCES ventas (id)
       )
     ''');
 
     await db.execute('''
-      CREATE TABLE IF NOT EXISTS lotes (
+      CREATE TABLE IF NOT EXISTS egresos_caja (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        producto_id INTEGER,
-        producto_nombre TEXT,
-        nombre_producto TEXT,
-        categoria TEXT,
-        cantidad INTEGER DEFAULT 0,
-        cantidad_producida INTEGER DEFAULT 0,
-        merma INTEGER DEFAULT 0,
-        estado TEXT DEFAULT 'En Horno',
         fecha TEXT,
-        fecha_hora TEXT,
+        monto REAL NOT NULL DEFAULT 0,
+        motivo TEXT NOT NULL,
         cajero_nombre TEXT,
-        responsable TEXT,
-        observaciones TEXT,
-        notas TEXT
+        nombre_caja TEXT
       )
     ''');
 
-    await db.rawInsert('''
-      INSERT OR IGNORE INTO usuarios (id, nombre, password, rol, nombre_caja)
-      VALUES (1, 'Administrador', 'admin123', 'admin', 'Caja 1 - Principal')
-    ''');
-
-    await db.rawInsert('''
-      INSERT OR IGNORE INTO configuracion_negocio (clave, valor)
-      VALUES ('nombre_negocio', 'AScafe')
-    ''');
-
-    await db.rawInsert('''
-      INSERT OR IGNORE INTO configuracion_negocio (clave, valor)
-      VALUES ('direccion_negocio', 'Riberalta, Beni - Bolivia')
-    ''');
-
-    await db.rawInsert('''
-      INSERT OR IGNORE INTO configuracion_negocio (clave, valor)
-      VALUES ('celular_negocio', '+591 70000000')
-    ''');
-
-    await db.rawInsert('''
-      INSERT OR IGNORE INTO configuracion_negocio (clave, valor)
-      VALUES ('logo_path', '')
-    ''');
-
-    var categoriasDefault = ['Bebidas', 'Horneados', 'Combos', 'Postres', 'General'];
-    for (var cat in categoriasDefault) {
-      await db.rawInsert(
-        'INSERT OR IGNORE INTO categorias (nombre) VALUES (?)',
-        [cat],
-      );
-    }
-
-    var demoProductos = [
-      <String, dynamic>{'nombre': 'Café Americano Caliente', 'categoria': 'Bebidas', 'categoria_id': 1, 'precio': 10.0, 'stock': 50, 'stock_actual': 50},
-      <String, dynamic>{'nombre': 'Jugo Natural de Naranja', 'categoria': 'Bebidas', 'categoria_id': 1, 'precio': 15.0, 'stock': 40, 'stock_actual': 40},
-      <String, dynamic>{'nombre': 'Refresco Tradicional Mocochinchi', 'categoria': 'Bebidas', 'categoria_id': 1, 'precio': 8.0, 'stock': 60, 'stock_actual': 60},
-      <String, dynamic>{'nombre': 'Empanada de Pollo Especial', 'categoria': 'Horneados', 'categoria_id': 2, 'precio': 12.0, 'stock': 30, 'stock_actual': 30},
-      <String, dynamic>{'nombre': 'Empanada de Carne Picante', 'categoria': 'Horneados', 'categoria_id': 2, 'precio': 12.0, 'stock': 25, 'stock_actual': 25},
-      <String, dynamic>{'nombre': 'Cuñapé Tradicional con Queso', 'categoria': 'Horneados', 'categoria_id': 2, 'precio': 7.0, 'stock': 80, 'stock_actual': 80},
-      <String, dynamic>{'nombre': 'Combo Ejecutivo Familiar', 'categoria': 'Combos', 'categoria_id': 3, 'precio': 45.0, 'stock': 15, 'stock_actual': 15},
-      <String, dynamic>{'nombre': 'Torta Húmeda de Chocolate', 'categoria': 'Postres', 'categoria_id': 4, 'precio': 18.0, 'stock': 10, 'stock_actual': 10},
-    ];
-
-    for (var prod in demoProductos) {
-      await db.insert(
-        'productos',
-        prod,
-        conflictAlgorithm: ConflictAlgorithm.ignore,
-      );
-    }
+    await _insertarDatosIniciales(db);
   }
 
-  Future obtenerConfiguracionNegocio() async {
-    final Database db = await instance.database;
-    final List resultado = await db.query('configuracion_negocio');
-    final Map config = <String, String>{
+  Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    await _onCreate(db, newVersion);
+  }
+
+  Future _insertarDatosIniciales(Database db) async {
+    final Map<String, String> configDefault = {
       'nombre_negocio': 'AScafe',
       'direccion_negocio': 'Riberalta, Beni - Bolivia',
       'celular_negocio': '+591 70000000',
       'logo_path': '',
+      'imap_host': 'imap.gmail.com',
+      'imap_port': '993',
+      'imap_email': '',
+      'imap_password': '',
+      'lista_mesas': '1,2,3,4,5,6,7,8,9,10',
+      'imagenes_productos_json': '{}',
+      'emojis_productos_json': '{}',
+      'admin_password': 'admin',
+      'modulo_contaduria_activo': 'true',
     };
-    for (final row in resultado) {
-      if (row is Map) {
-        final String k = row['clave']?.toString() ?? '';
-        final String v = row['valor']?.toString() ?? '';
-        if (k.isNotEmpty) {
-          config[k] = v;
-        }
+
+    for (final entry in configDefault.entries) {
+      await db.insert(
+        'configuracion',
+        {'clave': entry.key, 'valor': entry.value},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+
+    await db.insert(
+      'usuarios',
+      {
+        'nombre': 'Administrador',
+        'password': 'admin',
+        'rol': 'admin',
+        'nombre_caja': 'Caja 1 - Principal',
+        'caja_asignada': 'Caja 1 - Principal',
+        'activo': 1,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    await db.insert(
+      'usuarios',
+      {
+        'nombre': 'Cajero 1',
+        'password': '1234',
+        'rol': 'cajero',
+        'nombre_caja': 'Caja 1 - Principal',
+        'caja_asignada': 'Caja 1 - Principal',
+        'activo': 1,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+
+    final List catsIniciales = [
+      'Salteñas',
+      'Horneados',
+      'Bebidas',
+      'Café',
+      'Postres',
+      'Combos',
+      'General',
+    ];
+
+    for (final c in catsIniciales) {
+      await db.insert(
+        'categorias',
+        {'nombre': c},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+
+    final List prodExistentes = await db.query('productos', limit: 1);
+    if (prodExistentes.isEmpty) {
+      final List demoProds = [
+        {'cat': 'Salteñas', 'nom': 'Salteña de Pollo', 'pre': 10.0, 'stk': 50},
+        {'cat': 'Salteñas', 'nom': 'Salteña de Carne', 'pre': 10.0, 'stk': 50},
+        {'cat': 'Salteñas', 'nom': 'Salteña Picante', 'pre': 11.0, 'stk': 40},
+        {'cat': 'Horneados', 'nom': 'Empanada de Pollo Especial', 'pre': 12.0, 'stk': 24},
+        {'cat': 'Horneados', 'nom': 'Empanada de Carne Picante', 'pre': 12.0, 'stk': 19},
+        {'cat': 'Horneados', 'nom': 'Cuñapé Tradicional con Queso', 'pre': 7.0, 'stk': 70},
+        {'cat': 'Combos', 'nom': 'Combo Ejecutivo Familiar', 'pre': 45.0, 'stk': 12},
+        {'cat': 'Postres', 'nom': 'Torta Húmeda de Chocolate', 'pre': 18.0, 'stk': 7},
+        {'cat': 'General', 'nom': 'Panetón', 'pre': 10.0, 'stk': 47},
+      ];
+
+      for (final pItem in demoProds) {
+        final List catRow = await db.query(
+          'categorias',
+          where: 'nombre = ?',
+          whereArgs: [pItem['cat']],
+        );
+        final int catId = catRow.isNotEmpty ? (catRow.first['id'] as num).toInt() : 1;
+        await db.insert('productos', {
+          'categoria_id': catId,
+          'nombre': pItem['nom'],
+          'precio': pItem['pre'],
+          'stock_actual': pItem['stk'],
+        });
       }
     }
-    return config.cast();
   }
 
-  Future guardarConfiguracionNegocio(Map valores) async {
-    final Database db = await instance.database;
-    for (final entry in valores.entries) {
-      await db.insert(
-        'configuracion_negocio',
-        {
-          'clave': entry.key.toString(),
-          'valor': entry.value?.toString() ?? '',
-        },
+  Future obtenerConfiguracionNegocio() async {
+    final db = await database;
+    final List rows = await db.query('configuracion');
+    final Map<String, String> map = {};
+    for (final r in rows) {
+      final k = r['clave']?.toString() ?? '';
+      final v = r['valor']?.toString() ?? '';
+      if (k.isNotEmpty) {
+        map[k] = v;
+      }
+    }
+    return map;
+  }
+
+  Future guardarConfiguracionNegocio(Map<String, String> datos) async {
+    final db = await database;
+    final batch = db.batch();
+    datos.forEach((clave, valor) {
+      batch.insert(
+        'configuracion',
+        {'clave': clave, 'valor': valor},
         conflictAlgorithm: ConflictAlgorithm.replace,
       );
-    }
+    });
+    await batch.commit(noResult: true);
   }
 
-  Future obtenerUsuarios() async {
-    final Database db = await instance.database;
-    return await db.query('usuarios');
+  // ==================== LICENCIA MODULAR DE CONTADURÍA ====================
+
+  Future<bool> estaModuloContaduriaActivo() async {
+    final conf = await obtenerConfiguracionNegocio();
+    final val = (conf['modulo_contaduria_activo'] ?? 'true').toString().toLowerCase();
+    return val == 'true' || val == '1';
   }
 
-  Future autenticarUsuario(String nombre, String password) async {
-    final Database db = await instance.database;
-    final List resultado = await db.query(
-      'usuarios',
-      where: 'nombre = ? AND password = ?',
-      whereArgs: [nombre, password],
+  Future configurarModuloContaduriaPorLicencia(bool activo) async {
+    final db = await database;
+    await db.insert(
+      'configuracion',
+      {'clave': 'modulo_contaduria_activo', 'valor': activo ? 'true' : 'false'},
+      conflictAlgorithm: ConflictAlgorithm.replace,
     );
-    if (resultado.isNotEmpty) {
-      return Map.from(resultado.first as Map);
-    }
-    return null;
   }
 
-  Future crearActualizarUsuario({
-    int? id,
-    required String nombre,
-    required String password,
-    required String rol,
+  // ==================== CONTADURÍA, EGRESOS Y ESTADÍSTICAS ====================
+
+  Future registrarEgresoCaja({
+    required double monto,
+    required String motivo,
+    required String cajeroNombre,
     required String nombreCaja,
   }) async {
-    final Database db = await instance.database;
-    if (id == null) {
-      await db.insert('usuarios', {
-        'nombre': nombre,
-        'password': password,
-        'rol': rol,
-        'nombre_caja': nombreCaja,
-      });
-    } else {
-      await db.update(
-        'usuarios',
-        {
-          'nombre': nombre,
-          'password': password,
-          'rol': rol,
-          'nombre_caja': nombreCaja,
-        },
-        where: 'id = ?',
-        whereArgs: [id],
-      );
-    }
-  }
-
-  Future eliminarUsuario(int id) async {
-    final Database db = await instance.database;
-    await db.delete('usuarios', where: 'id = ?', whereArgs: [id]);
-  }
-
-  Future obtenerCategorias() async {
-    final Database db = await instance.database;
-    try {
-      final List res = await db.query('categorias');
-      final List lista = [];
-      for (final r in res) {
-        if (r is Map && r['nombre'] != null) {
-          lista.add(r['nombre'].toString());
-        }
-      }
-      if (lista.isEmpty) {
-        return ['General'].cast();
-      }
-      return lista.cast();
-    } catch (_) {
-      return ['General'].cast();
-    }
-  }
-
-  Future insertarCategoria(String nombre) async {
-    final Database db = await instance.database;
-    final List existing = await db.query(
-      'categorias',
-      where: 'nombre = ?',
-      whereArgs: [nombre],
-    );
-    if (existing.isEmpty) {
-      await db.insert('categorias', {'nombre': nombre});
-    }
-  }
-
-  Future eliminarCategoriaDB(dynamic cat) async {
-    final Database db = await instance.database;
-    if (cat is int) {
-      await db.delete('categorias', where: 'id = ?', whereArgs: [cat]);
-    } else {
-      await db.delete('categorias', where: 'nombre = ?', whereArgs: [cat.toString()]);
-    }
-  }
-
-  Future obtenerProductos() async {
-    final Database db = await instance.database;
-    try {
-      final List rows = await db.query('productos');
-      final List cats = await db.query('categorias');
-      final Map mapaCats = {};
-      for (final c in cats) {
-        if (c is Map && c['id'] != null) {
-          mapaCats[(c['id'] as num).toInt()] = c['nombre']?.toString() ?? 'General';
-        }
-      }
-
-      final List resultado = [];
-      for (final r in rows) {
-        if (r is Map) {
-          final Map m = Map.from(r);
-          final int st = (m['stock_actual'] as num?)?.toInt() ?? (m['stock'] as num?)?.toInt() ?? 0;
-          m['stock'] = st;
-          m['stock_actual'] = st;
-
-          String catNombre = m['categoria']?.toString() ?? '';
-          if (catNombre.isEmpty && m['categoria_id'] != null) {
-            final int cid = (m['categoria_id'] as num).toInt();
-            catNombre = mapaCats[cid]?.toString() ?? 'General';
-          }
-          if (catNombre.isEmpty) {
-            catNombre = 'General';
-          }
-          m['categoria'] = catNombre;
-          resultado.add(m);
-        }
-      }
-      return resultado;
-    } catch (_) {
-      return [];
-    }
-  }
-
-  Future insertarProducto({
-    required String nombre,
-    required double precio,
-    required int stock,
-    int? categoriaId,
-    String? categoria,
-    String? imagenPath,
-  }) async {
-    final Database db = await instance.database;
-    await db.insert('productos', {
-      'nombre': nombre,
-      'precio': precio,
-      'stock': stock,
-      'stock_actual': stock,
-      'categoria_id': categoriaId ?? 1,
-      'categoria': categoria ?? 'General',
-      'imagen_path': imagenPath,
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS egresos_caja (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fecha TEXT,
+        monto REAL NOT NULL DEFAULT 0,
+        motivo TEXT NOT NULL,
+        cajero_nombre TEXT,
+        nombre_caja TEXT
+      )
+    ''');
+    await db.insert('egresos_caja', {
+      'fecha': DateTime.now().toIso8601String(),
+      'monto': monto,
+      'motivo': motivo.trim(),
+      'cajero_nombre': cajeroNombre.trim(),
+      'nombre_caja': nombreCaja.trim(),
     });
   }
 
-  Future actualizarProducto(
-    int id,
-    double precio,
-    int stock,
-    String categoria,
-  ) async {
-    final Database db = await instance.database;
-    await insertarCategoria(categoria);
+  Future eliminarEgresoCaja(int id) async {
+    final db = await database;
+    await db.delete('egresos_caja', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future obtenerResumenContaduria({
+    required String desdeIso,
+    required String hastaIso,
+  }) async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS egresos_caja (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fecha TEXT,
+        monto REAL NOT NULL DEFAULT 0,
+        motivo TEXT NOT NULL,
+        cajero_nombre TEXT,
+        nombre_caja TEXT
+      )
+    ''');
+
+    final List ventasRows = await db.query(
+      'ventas',
+      where: 'fecha >= ? AND fecha <= ?',
+      whereArgs: [desdeIso, hastaIso],
+    );
+
+    double ingresosTotales = 0.0;
+    double ingresosEfectivo = 0.0;
+    double ingresosQr = 0.0;
+
+    for (final v in ventasRows) {
+      final m = v as Map;
+      final t = (m['total'] as num?)?.toDouble() ?? 0.0;
+      final met = (m['metodo_pago']?.toString() ?? 'Efectivo').toUpperCase();
+      ingresosTotales += t;
+      if (met.contains('QR')) {
+        ingresosQr += t;
+      } else {
+        ingresosEfectivo += t;
+      }
+    }
+
+    final List rankingProductos = await db.rawQuery('''
+      SELECT d.nombre_producto AS nombre,
+             SUM(d.cantidad) AS unidades,
+             SUM(d.subtotal) AS subtotal
+      FROM detalle_ventas d
+      INNER JOIN ventas v ON d.venta_id = v.id
+      WHERE v.fecha >= ? AND v.fecha <= ?
+      GROUP BY d.nombre_producto
+      ORDER BY unidades DESC, subtotal DESC
+    ''', [desdeIso, hastaIso]);
+
+    int totalUnidades = 0;
+    for (final r in rankingProductos) {
+      final rm = r as Map;
+      totalUnidades += (rm['unidades'] as num?)?.toInt() ?? 0;
+    }
+
+    final List listaEgresos = await db.query(
+      'egresos_caja',
+      where: 'fecha >= ? AND fecha <= ?',
+      whereArgs: [desdeIso, hastaIso],
+      orderBy: 'id DESC',
+    );
+
+    double totalEgresos = 0.0;
+    for (final e in listaEgresos) {
+      final em = e as Map;
+      totalEgresos += (em['monto'] as num?)?.toDouble() ?? 0.0;
+    }
+
+    return {
+      'ingresos_totales': ingresosTotales,
+      'ingresos_efectivo': ingresosEfectivo,
+      'ingresos_qr': ingresosQr,
+      'total_egresos': totalEgresos,
+      'cantidad_ventas': ventasRows.length,
+      'total_unidades': totalUnidades,
+      'ranking_productos': rankingProductos,
+      'lista_egresos': listaEgresos,
+    };
+  }
+
+  Future obtenerCategorias() async {
+    final db = await database;
+    final List rows = await db.query('categorias', orderBy: 'id ASC');
+    return rows.map((r) => r['nombre']?.toString() ?? 'General').toList();
+  }
+
+  Future insertarCategoria(String nombre) async {
+    final db = await database;
+    await db.insert(
+      'categorias',
+      {'nombre': nombre.trim()},
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+  }
+
+  Future eliminarCategoriaDB(String nombre) async {
+    final db = await database;
+    await db.delete('categorias', where: 'nombre = ?', whereArgs: [nombre.trim()]);
+  }
+
+  Future obtenerProductos() async {
+    final db = await database;
+    final List rows = await db.rawQuery('''
+      SELECT p.id, p.nombre, p.precio, p.stock_actual AS stock, p.stock_actual,
+             COALESCE(c.nombre, 'General') AS categoria
+      FROM productos p
+      LEFT JOIN categorias c ON p.categoria_id = c.id
+      ORDER BY p.id ASC
+    ''');
+    return rows;
+  }
+
+  Future actualizarProducto(int id, double precio, int stock, String categoriaNombre) async {
+    final db = await database;
+    await insertarCategoria(categoriaNombre);
     final List catRows = await db.query(
       'categorias',
       where: 'nombre = ?',
-      whereArgs: [categoria],
+      whereArgs: [categoriaNombre.trim()],
     );
     final int catId = catRows.isNotEmpty ? (catRows.first['id'] as num).toInt() : 1;
 
@@ -378,9 +439,7 @@ class DatabaseService {
       'productos',
       {
         'precio': precio,
-        'stock': stock,
         'stock_actual': stock,
-        'categoria': categoria,
         'categoria_id': catId,
       },
       where: 'id = ?',
@@ -389,71 +448,209 @@ class DatabaseService {
   }
 
   Future eliminarProducto(int id) async {
-    final Database db = await instance.database;
+    final db = await database;
     await db.delete('productos', where: 'id = ?', whereArgs: [id]);
   }
 
   Future registrarVentaCompleta({
+    required int cajaId,
     required double total,
-    int? usuarioId,
-    int? cajaId,
-    String? metodoPago,
-    List? detalles,
-    String? cajeroNombre,
-    String? nombreCaja,
-    String? clienteNombre,
-    String? nitCi,
-    double? montoRecibido,
-    double? cambio,
+    required String metodoPago,
+    required List detalles,
+    required String cajeroNombre,
+    required String nombreCaja,
+    required String clienteNombre,
+    required String nitCi,
+    required double montoRecibido,
+    required double cambio,
   }) async {
-    final Database db = await instance.database;
-    int ventaId = 0;
-    await db.transaction((txn) async {
-      ventaId = await txn.insert('ventas', {
-        'total': total,
-        'fecha': DateTime.now().toIso8601String(),
-        'usuario_id': usuarioId ?? 1,
-        'caja_id': cajaId ?? 1,
-        'metodo_pago': metodoPago ?? 'Efectivo',
-        'cajero_nombre': cajeroNombre ?? '',
-        'nombre_caja': nombreCaja ?? '',
-        'cliente_nombre': clienteNombre ?? 'Cliente Casual',
-        'nit_ci': nitCi ?? '0',
-        'monto_recibido': montoRecibido ?? total,
-        'cambio': cambio ?? 0.0,
-      });
+    final db = await database;
+    final int ventaId = await db.insert('ventas', {
+      'caja_id': cajaId,
+      'fecha': DateTime.now().toIso8601String(),
+      'total': total,
+      'metodo_pago': metodoPago,
+      'cajero_nombre': cajeroNombre,
+      'nombre_caja': nombreCaja,
+      'cliente_nombre': clienteNombre,
+      'nit_ci': nitCi,
+      'monto_recibido': montoRecibido,
+      'cambio': cambio,
     });
+
+    for (final d in detalles) {
+      final m = d as Map;
+      await db.insert('detalle_ventas', {
+        'venta_id': ventaId,
+        'producto_id': m['producto_id'],
+        'nombre_producto': m['nombre'],
+        'cantidad': m['cantidad'],
+        'precio_unitario': m['precio_unitario'],
+        'subtotal': m['subtotal'],
+      });
+    }
+
     return ventaId;
   }
 
-  Future obtenerLotes() async {
-    final Database db = await instance.database;
-    try {
-      return await db.query('lotes', orderBy: 'id DESC');
-    } catch (_) {
-      return [];
+  // ==================== AUTENTICACIÓN Y GESTIÓN DE USUARIOS ====================
+
+  Future autenticarUsuario(String nombre, String password) async {
+    final db = await database;
+    final List rows = await db.query(
+      'usuarios',
+      where: 'LOWER(nombre) = LOWER(?) AND password = ? AND activo = 1',
+      whereArgs: [nombre.trim(), password.trim()],
+      limit: 1,
+    );
+    if (rows.isNotEmpty) {
+      return Map<String, dynamic>.from(rows.first);
+    }
+
+    if (nombre.trim().toLowerCase() == 'administrador' || nombre.trim().toLowerCase() == 'admin') {
+      final conf = await obtenerConfiguracionNegocio();
+      final adminPass = conf['admin_password'] ?? 'admin';
+      if (password.trim() == adminPass) {
+        return {
+          'id': 1,
+          'nombre': 'Administrador',
+          'rol': 'admin',
+          'nombre_caja': 'Caja 1 - Principal',
+          'caja_asignada': 'Caja 1 - Principal',
+        };
+      }
+    }
+    return null;
+  }
+
+  Future obtenerUsuarios() async {
+    final db = await database;
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS usuarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        rol TEXT NOT NULL DEFAULT 'cajero',
+        nombre_caja TEXT DEFAULT 'Caja 1 - Principal',
+        caja_asignada TEXT DEFAULT 'Caja 1 - Principal',
+        activo INTEGER NOT NULL DEFAULT 1
+      )
+    ''');
+
+    final List rows = await db.query('usuarios', orderBy: 'id ASC');
+    if (rows.isEmpty) {
+      await _insertarDatosIniciales(db);
+      return await db.query('usuarios', orderBy: 'id ASC');
+    }
+    return rows;
+  }
+
+  Future crearActualizarUsuario({
+    int? id,
+    required String nombre,
+    required String nombreCaja,
+    required String password,
+    required String rol,
+  }) async {
+    final db = await database;
+    if (id != null) {
+      await db.update(
+        'usuarios',
+        {
+          'nombre': nombre.trim(),
+          'nombre_caja': nombreCaja.trim(),
+          'caja_asignada': nombreCaja.trim(),
+          'password': password.trim(),
+          'rol': rol.trim(),
+        },
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    } else {
+      await db.insert(
+        'usuarios',
+        {
+          'nombre': nombre.trim(),
+          'nombre_caja': nombreCaja.trim(),
+          'caja_asignada': nombreCaja.trim(),
+          'password': password.trim(),
+          'rol': rol.trim(),
+          'activo': 1,
+        },
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+
+    if (rol.toLowerCase() == 'admin' || nombre.toLowerCase() == 'administrador') {
+      await db.insert(
+        'configuracion',
+        {'clave': 'admin_password', 'valor': password.trim()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
     }
   }
 
-  Future registrarLote(Map datos) async {
-    final Database db = await instance.database;
-    final Map row = Map.from(datos);
-    return await db.insert('lotes', row.cast());
+  Future crearOActualizarUsuario({
+    int? id,
+    required String nombre,
+    required String password,
+    required String rol,
+    String cajaAsignada = 'Caja 1 - Principal',
+  }) async {
+    await crearActualizarUsuario(
+      id: id,
+      nombre: nombre,
+      nombreCaja: cajaAsignada,
+      password: password,
+      rol: rol,
+    );
   }
 
-  Future eliminarLote(int id) async {
-    final Database db = await instance.database;
-    await db.delete('lotes', where: 'id = ?', whereArgs: [id]);
+  Future cambiarPasswordUsuario(int id, String nuevaPassword, {bool esAdmin = false}) async {
+    final db = await database;
+    await db.update(
+      'usuarios',
+      {'password': nuevaPassword.trim()},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+
+    if (esAdmin) {
+      await db.insert(
+        'configuracion',
+        {'clave': 'admin_password', 'valor': nuevaPassword.trim()},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+    }
+  }
+
+  Future cambiarPasswordAdministradorGlobal(String nuevaPassword) async {
+    final db = await database;
+    await db.insert(
+      'configuracion',
+      {'clave': 'admin_password', 'valor': nuevaPassword.trim()},
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+    await db.update(
+      'usuarios',
+      {'password': nuevaPassword.trim()},
+      where: "LOWER(rol) = 'admin' OR LOWER(nombre) = 'administrador'",
+    );
+  }
+
+  Future eliminarUsuario(int id) async {
+    final db = await database;
+    await db.delete('usuarios', where: 'id = ?', whereArgs: [id]);
   }
 
   Future restaurarValoresDeFabrica() async {
-    final Database db = await instance.database;
-    await db.delete('productos');
-    await db.delete('categorias');
+    final db = await database;
+    await db.delete('detalle_ventas');
     await db.delete('ventas');
     await db.delete('caja_sesiones');
-    try {
-      await db.delete('lotes');
-    } catch (_) {}
+    await db.delete('egresos_caja');
+    await db.delete('productos');
+    await db.delete('configuracion');
+    await _insertarDatosIniciales(db);
   }
 }
